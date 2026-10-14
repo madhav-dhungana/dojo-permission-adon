@@ -1,0 +1,58 @@
+# Operating systems and editors
+.DS_Store
+**/.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~
+
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+credentials/
+secrets/
+docker-compose.override.yml
+docker-compose.*.local.yml
+
+# Python, tests, and builds
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.eggs/
+*.egg-info/
+build/
+dist/
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+
+# Runtime and generated artifacts
+*.log
+*.sqlite3
+media/
+staticfiles/
+output/
+artifacts/
+screenshots/
+*.har
+.dojo-permission-deploy/
+compose.dojo-permission.*.yml
+
+# Local staging tools. These can reset accounts or contain sensitive HTML.
+/scripts/render_admin_snapshot.py
+/scripts/seed_demo.py
+/scripts/validate_demo.py

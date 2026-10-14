@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% load i18n %}
+
+{% block content %}
+  {{ block.super }}
+  <h3>{% trans "Restricted group members" %} — {{ policy.group.name }}</h3>
+
+  <div class="row">
+    <div class="col-md-6">
+      <div class="panel panel-default">
+        <div class="panel-heading"><strong>{% trans "Add an existing account" %}</strong></div>
+        <div class="panel-body">
+          <form class="form-horizontal" method="post">
+            {% csrf_token %}
+            <input type="hidden" name="action" value="add_existing">
+            {% include "dojo/form_fields.html" with form=existing_form %}
+            <button class="btn btn-primary" type="submit">{% trans "Add user" %}</button>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <div class="col-md-6">
+      <div class="panel panel-default">
+        <div class="panel-heading"><strong>{% trans "Create or invite an account" %}</strong></div>
+        <div class="panel-body">
+          <form class="form-horizontal" method="post">
+            {% csrf_token %}
+            <input type="hidden" name="action" value="invite_new">
+            {% include "dojo/form_fields.html" with form=invitation_form %}
+            <button class="btn btn-primary" type="submit">{% trans "Create and add user" %}</button>
+          </form>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel panel-default">
+    <div class="panel-heading"><strong>{% trans "Current members" %}</strong></div>
+    <div class="table-responsive">
+      <table class="table table-striped">
+        <thead>
+          <tr><th>{% trans "Username" %}</th><th>{% trans "Email" %}</th><th>{% trans "Group role" %}</th></tr>
+        </thead>
+        <tbody>
+          {% for member in members %}
+            <tr><td>{{ member.user.username }}</td><td>{{ member.user.email }}</td><td>{{ member.role.name }}</td></tr>
+          {% empty %}
+            <tr><td colspan="3">{% trans "No members" %}</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+{% endblock %}

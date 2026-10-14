@@ -1,0 +1,33 @@
+# LOCAL DEVELOPMENT ONLY.
+# Do not apply this file unchanged to a customized remote deployment. Use
+# compose.permission.production.yml and preserve that deployment's nginx and
+# extra_settings mounts.
+services:
+  nginx:
+    image: ${DOJO_PERMISSION_NGINX_IMAGE:-dojo-permission/defectdojo-nginx:2.58.3}
+
+  uwsgi:
+    build:
+      context: ../dojo-permission-library
+      dockerfile: docker/Dockerfile
+      args:
+        BASE_IMAGE: ${DOJO_PERMISSION_BASE_IMAGE:-defectdojo/defectdojo-django:2.58.3}
+        RUNTIME_USER: ${DOJO_PERMISSION_RUNTIME_USER:-1001}
+    image: ${DOJO_PERMISSION_IMAGE:-dojo-permission/defectdojo-django:2.58.3}
+    volumes:
+      - ../dojo-permission-library/integration/extra_settings:/app/docker/extra_settings:ro
+
+  celerybeat:
+    image: ${DOJO_PERMISSION_IMAGE:-dojo-permission/defectdojo-django:2.58.3}
+    volumes:
+      - ../dojo-permission-library/integration/extra_settings:/app/docker/extra_settings:ro
+
+  celeryworker:
+    image: ${DOJO_PERMISSION_IMAGE:-dojo-permission/defectdojo-django:2.58.3}
+    volumes:
+      - ../dojo-permission-library/integration/extra_settings:/app/docker/extra_settings:ro
+
+  initializer:
+    image: ${DOJO_PERMISSION_IMAGE:-dojo-permission/defectdojo-django:2.58.3}
+    volumes:
+      - ../dojo-permission-library/integration/extra_settings:/app/docker/extra_settings:ro

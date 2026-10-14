@@ -1,0 +1,24 @@
+# Production image-only overlay.
+#
+# Merge this after the customized deployment's existing Compose files. It does
+# not replace nginx, volumes, secrets, entrypoints, or extra_settings mounts.
+services:
+  uwsgi:
+    image: ${DOJO_PERMISSION_IMAGE:?Set DOJO_PERMISSION_IMAGE to the derived immutable image reference}
+    environment:
+      DD_DOJO_PERMISSION_ENABLED: "true"
+
+  initializer:
+    image: ${DOJO_PERMISSION_IMAGE:?Set DOJO_PERMISSION_IMAGE to the derived immutable image reference}
+    environment:
+      DD_DOJO_PERMISSION_ENABLED: "true"
+
+  celeryworker:
+    image: ${DOJO_PERMISSION_IMAGE:?Set DOJO_PERMISSION_IMAGE to the derived immutable image reference}
+    environment:
+      DD_DOJO_PERMISSION_ENABLED: "true"
+
+  celerybeat:
+    image: ${DOJO_PERMISSION_IMAGE:?Set DOJO_PERMISSION_IMAGE to the derived immutable image reference}
+    environment:
+      DD_DOJO_PERMISSION_ENABLED: "true"

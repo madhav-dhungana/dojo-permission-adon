@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dojo-permission"
+version = "0.1.0"
+description = "Restricted Writer-style permission layer for DefectDojo 2.58.3"
+readme = "README.md"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    "Django==5.2.14",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8.3,<9",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+exclude = ["dojo_permission.tests*"]
+
+[tool.setuptools.package-data]
+dojo_permission = ["templates/**/*.html"]
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+testpaths = ["tests"]
