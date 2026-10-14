@@ -26,7 +26,84 @@ The Django system check rejects other DefectDojo versions. A customized
 deployment must be extended from its **exact current Django image**, not from a
 generic official image with the same version number.
 
-## Installation
+## Quick start on a new machine
+
+For a clean local staging stack, install Git, Docker Engine or Docker Desktop,
+Docker Compose 2.24.4 or newer, and curl. Start Docker, then run:
+
+```bash
+mkdir -p dojo-permission
+cd dojo-permission
+
+git clone \
+  https://github.com/madhav-dhungana/dojo-permission-adon.git
+
+cd dojo-permission-adon
+bash deploy/bootstrap-local-docker.sh
+```
+
+The script clones the official DefectDojo `2.58.3` tag beside this repository,
+verifies its pinned commit, builds the matching Django and nginx images,
+installs this package in the Django image, starts the complete Compose stack,
+applies migrations, and waits for the login page. The default URL is
+<http://127.0.0.1:18080>. DefectDojo prints the generated `admin` password in
+the initializer output on the first run. Both published ports bind only to
+`127.0.0.1`.
+
+A successful run ends with:
+
+```text
+Local staging is ready
+DefectDojo:       2.58.3
+Dojo Permission: 0.1.0
+URL:              http://127.0.0.1:18080/login
+Admin username:   admin
+```
+
+The checkout directory, Compose project name, ports, health URL, and timeouts
+are configurable:
+
+```bash
+bash deploy/bootstrap-local-docker.sh --help
+```
+
+The bootstrap is safe to rerun with the same checkout and Compose project. It
+may recreate its service containers, but it does not reset a checkout, run
+`compose down`, or delete persistent volumes or application data.
+
+For normal lifecycle commands, start in the library checkout:
+
+```bash
+DOJO_PERMISSION_LIBRARY_ROOT="$(pwd -P)"
+cd ../defectdojo-2.58.3
+export DOJO_PERMISSION_LIBRARY_ROOT DD_PORT=18080 DD_TLS_PORT=18443
+
+LOCAL=(
+  docker compose
+  --env-file /dev/null
+  --project-name dojo-permission-dev
+  --file docker-compose.yml
+  --file "$DOJO_PERMISSION_LIBRARY_ROOT/docker/compose.permission.yml"
+)
+
+"${LOCAL[@]}" ps --all
+"${LOCAL[@]}" logs --tail 100
+"${LOCAL[@]}" stop nginx celerybeat celeryworker uwsgi valkey postgres
+"${LOCAL[@]}" start postgres valkey
+"${LOCAL[@]}" start uwsgi celeryworker celerybeat
+"${LOCAL[@]}" start nginx
+```
+
+Run the bootstrap again to rebuild or recreate missing containers. Never add
+`--volumes` to a removal command unless deleting the local database and uploads
+is intentional.
+
+> **Local staging only:** this uses DefectDojo's evaluation Compose stack,
+> sample secrets, and this project's complete sample settings mount. Do not
+> expose it directly to the Internet or apply its Compose overlay to an
+> existing customized deployment.
+
+## Existing customized deployments
 
 Two supported approaches produce an immutable derived Django image and use the
 same plan-first cutover:

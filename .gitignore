@@ -50,6 +50,7 @@ artifacts/
 screenshots/
 *.har
 .dojo-permission-deploy/
+.dojo-permission-local/
 compose.dojo-permission.*.yml
 
 # Local staging tools. These can reset accounts or contain sensitive HTML.

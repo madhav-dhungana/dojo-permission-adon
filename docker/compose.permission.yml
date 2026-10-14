@@ -5,29 +5,52 @@
 services:
   nginx:
     image: ${DOJO_PERMISSION_NGINX_IMAGE:-dojo-permission/defectdojo-nginx:2.58.3}
+    ports: !override
+      - target: 8080
+        published: ${DD_PORT:-18080}
+        host_ip: 127.0.0.1
+        protocol: tcp
+        mode: host
+      - target: 8443
+        published: ${DD_TLS_PORT:-18443}
+        host_ip: 127.0.0.1
+        protocol: tcp
+        mode: host
 
   uwsgi:
     build:
-      context: ../dojo-permission-library
+      context: ${DOJO_PERMISSION_LIBRARY_ROOT:-../dojo-permission-library}
       dockerfile: docker/Dockerfile
       args:
         BASE_IMAGE: ${DOJO_PERMISSION_BASE_IMAGE:-defectdojo/defectdojo-django:2.58.3}
         RUNTIME_USER: ${DOJO_PERMISSION_RUNTIME_USER:-1001}
     image: ${DOJO_PERMISSION_IMAGE:-dojo-permission/defectdojo-django:2.58.3}
     volumes:
-      - ../dojo-permission-library/integration/extra_settings:/app/docker/extra_settings:ro
+      - type: bind
+        source: ${DOJO_PERMISSION_LIBRARY_ROOT:-../dojo-permission-library}/integration/extra_settings
+        target: /app/docker/extra_settings
+        read_only: true
 
   celerybeat:
     image: ${DOJO_PERMISSION_IMAGE:-dojo-permission/defectdojo-django:2.58.3}
     volumes:
-      - ../dojo-permission-library/integration/extra_settings:/app/docker/extra_settings:ro
+      - type: bind
+        source: ${DOJO_PERMISSION_LIBRARY_ROOT:-../dojo-permission-library}/integration/extra_settings
+        target: /app/docker/extra_settings
+        read_only: true
 
   celeryworker:
     image: ${DOJO_PERMISSION_IMAGE:-dojo-permission/defectdojo-django:2.58.3}
     volumes:
-      - ../dojo-permission-library/integration/extra_settings:/app/docker/extra_settings:ro
+      - type: bind
+        source: ${DOJO_PERMISSION_LIBRARY_ROOT:-../dojo-permission-library}/integration/extra_settings
+        target: /app/docker/extra_settings
+        read_only: true
 
   initializer:
     image: ${DOJO_PERMISSION_IMAGE:-dojo-permission/defectdojo-django:2.58.3}
     volumes:
-      - ../dojo-permission-library/integration/extra_settings:/app/docker/extra_settings:ro
+      - type: bind
+        source: ${DOJO_PERMISSION_LIBRARY_ROOT:-../dojo-permission-library}/integration/extra_settings
+        target: /app/docker/extra_settings
+        read_only: true

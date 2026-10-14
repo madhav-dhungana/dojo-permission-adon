@@ -33,6 +33,7 @@ docker/*.yml
 SECURITY.md
 output
 artifacts
+.dojo-permission-local
 screenshots
 *.log
 *.sqlite3
