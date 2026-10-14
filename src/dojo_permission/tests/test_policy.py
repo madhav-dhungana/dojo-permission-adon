@@ -170,7 +170,6 @@ class RestrictedPolicyTests(TestCase):
         superuser = get_user_model().objects.create_superuser(
             username="permission-superuser",
             email="superuser@example.test",
-            password="not-used-in-test",
         )
         Dojo_Group_Member.objects.create(
             group=self.group,
@@ -197,7 +196,6 @@ class RestrictedPolicyTests(TestCase):
         superuser = get_user_model().objects.create_superuser(
             username="ui-superuser",
             email="ui-superuser@example.test",
-            password="not-used-in-test",
         )
         self.client.force_login(superuser)
 
@@ -300,7 +298,6 @@ class RestrictedPolicyTests(TestCase):
         superuser = get_user_model().objects.create_superuser(
             username="native-group-superuser",
             email="native-group-superuser@example.test",
-            password="not-used-in-test",
         )
         self.client.force_login(superuser)
 
@@ -447,7 +444,6 @@ class RestrictedPolicyTests(TestCase):
         policy_admin = get_user_model().objects.create_superuser(
             username="checkbox-policy-admin",
             email="checkbox-policy-admin@example.test",
-            password="not-used-in-test",
         )
 
         edit_form = RestrictedDojoGroupForm(data={

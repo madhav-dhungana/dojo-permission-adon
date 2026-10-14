@@ -11,10 +11,11 @@ supported by the current release.
 
 ## Reporting a vulnerability
 
-Do not open a public issue containing credentials, exploit details, customer
-data, or deployment configuration. Report privately to the repository owner
-through GitHub's private vulnerability reporting feature. If that feature is
-not enabled, contact the owner privately and provide a minimal reproduction.
+Do not open a public issue containing credentials, exploit details, sensitive
+deployment data, or deployment configuration. Report privately through
+GitHub's private vulnerability reporting feature. If that feature is not
+available, open an issue containing no sensitive details and ask the maintainer
+for a private reporting channel.
 
 ## Deployment cautions
 
@@ -22,7 +23,7 @@ not enabled, contact the owner privately and provide a minimal reproduction.
   digest; never replace it with a generic upstream image.
 - Apply the same derived digest to every Django and Celery process.
 - Back up PostgreSQL and configuration before migration.
-- Do not run files excluded under `scripts/` on a remote deployment; the local
+- Do not run files excluded under `scripts/` on an existing deployment; the local
   demo tools can reset accounts and modify roles and data.
 - Disabling this package restores the users' underlying native DefectDojo
   permissions immediately. Plan rollback as an authorization change.

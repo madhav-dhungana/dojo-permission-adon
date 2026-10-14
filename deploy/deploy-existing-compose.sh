@@ -42,7 +42,8 @@ Required:
   --compose-file FILE    Existing customized Compose file; repeat as needed.
   --image REF            Derived immutable digest or local sha256 image ID.
   --rollback-image REF   Current immutable Django image reference/ID.
-  --settings-file FILE   Existing host local_settings.py; it is never replaced.
+  --settings-file FILE   Existing host local_settings.py; its content is
+                         preserved and a managed hook is appended.
   --release-override FILE Persistent generated image-only Compose override.
   --health-url URL       Login/health URL checked after cutover.
 
