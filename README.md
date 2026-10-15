@@ -62,6 +62,11 @@ bash deploy/bootstrap-local-docker.sh
 
 This reuses the downloaded DefectDojo checkout and available build cache.
 
+Use the same update-and-retry commands if nginx exits with
+`/entrypoint-nginx.sh: Permission denied`. The bootstrap repairs that script's
+permissions in a verified source checkout and uses normal source-file
+permissions for new downloads. A fresh clone is not required.
+
 If a later build or startup step fails, the completed
 `../defectdojo-2.58.3` checkout stays on disk. Edit its `docker-compose.yml` as
 needed, then run this from the library directory to continue with that file:

@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 
@@ -31,13 +32,21 @@ if name == "git":
         target.mkdir(exist_ok=True)
         (target / ".git").mkdir()
         (target / "docker-compose.yml").write_text("services: {}\n")
+        entrypoint = target / "docker" / "entrypoint-nginx.sh"
+        entrypoint.parent.mkdir()
+        entrypoint.write_text("#!/bin/sh\nexec nginx -g 'daemon off;'\n")
+        mask = os.umask(0)
+        os.umask(mask)
+        entrypoint.chmod(0o777 & ~mask)
     elif args[-2:] == ["rev-parse", "HEAD"]:
-        print("ea611112772b08b74e6429e833728ce500b4c284")
+        print(os.environ.get("STUB_GIT_HEAD", "ea611112772b08b74e6429e833728ce500b4c284"))
     elif args[-2:] == ["rev-parse", "--is-inside-work-tree"]:
         print("true")
     elif "describe" in args:
-        print("2.58.3")
-    elif args[-2:] != ["status", "--porcelain"]:
+        print(os.environ.get("STUB_GIT_TAG", "2.58.3"))
+    elif args[-2:] == ["status", "--porcelain"]:
+        print(os.environ.get("STUB_GIT_STATUS", ""))
+    else:
         sys.exit("Unexpected Git command: " + repr(args))
 elif name == "docker":
     if args[:2] == ["compose", "version"]:
@@ -114,6 +123,10 @@ class LocalStack:
         self.dojo.mkdir(exist_ok=True)
         compose = self.dojo / "docker-compose.yml"
         compose.write_text("services: {}\n# locally edited certificate settings\n")
+        entrypoint = self.dojo / "docker" / "entrypoint-nginx.sh"
+        entrypoint.parent.mkdir(exist_ok=True)
+        entrypoint.write_text("#!/bin/sh\nexec nginx -g 'daemon off;'\n")
+        entrypoint.chmod(0o700)
         return compose
 
     def state(self, project, *, library=None):
@@ -150,6 +163,10 @@ def test_failed_build_keeps_checkout_for_edited_compose_recovery(stack):
     assert (stack.dojo / ".git").is_dir()
     compose = stack.dojo / "docker-compose.yml"
     assert compose.is_file()
+    assert stat.S_IMODE(compose.stat().st_mode) == 0o644
+    assert stat.S_IMODE((stack.dojo / "docker/entrypoint-nginx.sh").stat().st_mode) == 0o755
+    state = stack.library / ".dojo-permission-local" / f"{stack.project}.state"
+    assert stat.S_IMODE(state.stat().st_mode) == 0o600
     assert len([call for call in stack.calls if call[0] == "git" and "clone" in call]) == 1
     initial_calls = stack.calls
 
@@ -166,6 +183,60 @@ def test_failed_build_keeps_checkout_for_edited_compose_recovery(stack):
     assert not any(
         token in {"down", "rm", "prune"} for call in initial_calls + stack.calls for token in call
     )
+
+
+def test_clean_strict_retry_repairs_only_nginx_entrypoint_permissions(stack):
+    compose = stack.existing_compose()
+    (stack.dojo / ".git").mkdir()
+    compose.chmod(0o600)
+    entrypoint = stack.dojo / "docker/entrypoint-nginx.sh"
+    original_script = entrypoint.read_bytes()
+    original_compose = compose.read_bytes()
+    result = stack.run()
+    assert result.returncode == 42, result.stdout + result.stderr
+    assert stat.S_IMODE(entrypoint.stat().st_mode) == 0o755
+    assert entrypoint.read_bytes() == original_script
+    assert stat.S_IMODE(compose.stat().st_mode) == 0o600
+    assert compose.read_bytes() == original_compose
+
+
+@pytest.mark.parametrize("mode", [(), ("--with-signing-certificate",)])
+def test_existing_pull_preserves_local_entrypoint_permissions(stack, mode):
+    stack.existing_compose()
+    entrypoint = stack.dojo / "docker/entrypoint-nginx.sh"
+    original_script = entrypoint.read_bytes()
+    result = stack.run("install-local.sh", *mode, GIT_FORBIDDEN="1")
+    assert result.returncode != 0
+    assert "controlled image-pull failure" in result.stderr
+    assert stat.S_IMODE(entrypoint.stat().st_mode) == 0o700
+    assert entrypoint.read_bytes() == original_script
+
+
+@pytest.mark.parametrize("invalid", ["dirty", "commit", "tag", "env-file", "symlink"])
+def test_strict_validation_refuses_before_changing_permissions(stack, invalid):
+    stack.existing_compose()
+    (stack.dojo / ".git").mkdir()
+    entrypoint = stack.dojo / "docker/entrypoint-nginx.sh"
+    preserved = entrypoint
+    env = {}
+    if invalid == "dirty":
+        env["STUB_GIT_STATUS"] = " M docker/entrypoint-nginx.sh"
+    elif invalid == "commit":
+        env["STUB_GIT_HEAD"] = "0" * 40
+    elif invalid == "tag":
+        env["STUB_GIT_TAG"] = "2.58.2"
+    elif invalid == "env-file":
+        (stack.dojo / ".env").write_text("LOCAL_SETTING=1\n")
+    else:
+        preserved = stack.dojo.parent / "external-entrypoint.sh"
+        entrypoint.rename(preserved)
+        entrypoint.symlink_to(preserved)
+    original = preserved.read_bytes()
+    result = stack.run(**env)
+    assert result.returncode not in (0, 42), result.stdout + result.stderr
+    assert not any("build" in call for call in stack.calls)
+    assert stat.S_IMODE(preserved.stat().st_mode) == 0o700
+    assert preserved.read_bytes() == original
 
 
 @pytest.mark.parametrize("mode", [(), ("--without-signing-certificate",)])

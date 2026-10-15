@@ -273,6 +273,25 @@ Docker Desktop is installed somewhere else, add that installation's
 `Contents/Resources/bin` directory to your shell's `PATH` before running the
 script.
 
+### nginx exits with `/entrypoint-nginx.sh: Permission denied`
+
+An earlier bootstrap downloaded source files with private permissions, so the
+nginx image's non-root user could not read its entrypoint script. Update the
+library and rerun from the same library directory:
+
+```bash
+git pull --ff-only
+bash deploy/bootstrap-local-docker.sh
+```
+
+The source bootstrap restores only the nginx entrypoint to `0755` after
+verifying the pinned, clean checkout. New downloads use normal source-file
+permissions; local stack-state files remain private. Existing-checkout modes
+that use prebuilt images leave the downloaded files unchanged. An image check
+also catches an unreadable entrypoint before starting services.
+
+The existing checkout, database, and ports are reused.
+
 ### DefectDojo outbound HTTPS reports an unknown certificate authority
 
 Confirm that the downloaded Compose configuration supplies the correct

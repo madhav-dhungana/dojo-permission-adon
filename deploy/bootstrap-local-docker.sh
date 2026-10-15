@@ -329,8 +329,13 @@ if [[ "$DEPLOYMENT_MODE" == strict ]]; then
         if [[ -n "$CA_BUNDLE" ]]; then
             GIT_CLONE+=(-c "http.sslCAInfo=$CA_BUNDLE")
         fi
-        "${GIT_CLONE[@]}" clone --branch "$EXPECTED_DD_TAG" --single-branch \
-            "$DEFECTDOJO_REPOSITORY" "$CLONE_TEMP"
+        # Git checkout modes become Docker COPY modes. Keep source files readable
+        # by the image's non-root users without relaxing private stack-state files.
+        (
+            umask 022
+            "${GIT_CLONE[@]}" clone --branch "$EXPECTED_DD_TAG" --single-branch \
+                "$DEFECTDOJO_REPOSITORY" "$CLONE_TEMP"
+        )
         unset GIT_CLONE
         [[ "$(git -C "$CLONE_TEMP" rev-parse HEAD)" == "$EXPECTED_DD_COMMIT" ]] || die \
             "The cloned DefectDojo tag did not resolve to the pinned commit"
@@ -354,6 +359,14 @@ if [[ "$DEPLOYMENT_MODE" == strict ]]; then
         "DefectDojo has local changes. Use --existing-defectdojo-dir with local or pull images to opt in to a modified checkout."
     [[ ! -e "$DEFECTDOJO_DIR/.env" ]] || die \
         "Remove or move $DEFECTDOJO_DIR/.env; strict bootstrap uses a controlled Compose environment."
+
+    # Repair the executable copied unchanged by the official nginx Dockerfile.
+    # Earlier bootstraps cloned it as 0700, preventing nginx's UID 1001 from reading it.
+    NGINX_ENTRYPOINT="$DEFECTDOJO_DIR/docker/entrypoint-nginx.sh"
+    [[ -f "$NGINX_ENTRYPOINT" && ! -L "$NGINX_ENTRYPOINT" ]] || die \
+        "DefectDojo nginx entrypoint must be a regular, non-symlink file: $NGINX_ENTRYPOINT"
+    chmod 0755 "$NGINX_ENTRYPOINT"
+    unset NGINX_ENTRYPOINT
 else
     [[ -d "$DEFECTDOJO_DIR" ]] || die \
         "Existing DefectDojo path is not a directory: $DEFECTDOJO_DIR"
@@ -537,6 +550,12 @@ NGINX_IMAGE_ID="$("${DOCKER[@]}" image inspect "$NGINX_SOURCE_IMAGE" --format '{
 
 "${DOCKER[@]}" run --pull=never --rm --entrypoint python "$BASE_IMAGE_ID" -c \
     "import dojo, django, sys; assert dojo.__version__ == '$EXPECTED_DD_TAG', dojo.__version__; assert django.get_version() == '$EXPECTED_DJANGO_VERSION', django.get_version(); assert sys.version_info[:2] == ($EXPECTED_PYTHON_MAJOR, $EXPECTED_PYTHON_MINOR), sys.version"
+
+if ! "${DOCKER[@]}" run --pull=never --rm --network none --entrypoint /bin/sh \
+    "$NGINX_IMAGE_ID" -c 'test -r /entrypoint-nginx.sh && test -x /entrypoint-nginx.sh'
+then
+    die "The nginx image user cannot read or execute /entrypoint-nginx.sh. Rebuild nginx with a readable, executable entrypoint."
+fi
 
 BASE_ID_SUFFIX="${BASE_IMAGE_ID#sha256:}"
 NGINX_ID_SUFFIX="${NGINX_IMAGE_ID#sha256:}"
