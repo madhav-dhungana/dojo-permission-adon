@@ -26,66 +26,86 @@ The Django system check rejects other DefectDojo versions. A customized
 deployment must be extended from its **exact current Django image**, not from a
 generic official image with the same version number.
 
-## Quick start on a new machine
+## Local installation
 
-For a clean local staging stack, install Git, Docker Engine or Docker Desktop,
-Docker Compose 2.24.4 or newer, and curl. Start Docker, then run:
+Install Git, Docker Engine or Docker Desktop, Docker Compose 2.24.4 or newer,
+and curl. Start Docker before running the installer. There are two local
+choices.
+
+### Without Signing Certificate
+
+Choose one installation directory, clone the library, then run the one-shot
+installer. It downloads the pinned DefectDojo source beside the library.
 
 ```bash
-mkdir -p dojo-permission
-cd dojo-permission
+INSTALL_ROOT="$HOME/dojo-permission"
+mkdir -p "$INSTALL_ROOT"
+cd "$INSTALL_ROOT"
 
 git clone \
   https://github.com/madhav-dhungana/dojo-permission-adon.git
 
-cd dojo-permission-adon
-bash deploy/bootstrap-local-docker.sh
+cd "$INSTALL_ROOT/dojo-permission-adon"
+bash deploy/install-local.sh
 ```
 
-The script clones the official DefectDojo `2.58.3` tag beside this repository,
-verifies its pinned commit, builds the matching Django and nginx images,
-installs this package in the Django image, starts the complete Compose stack,
-applies migrations, and waits for the login page. The default URL is
-<http://127.0.0.1:18080>. DefectDojo prints the generated `admin` password in
-the initializer output on the first run. Both published ports bind only to
-`127.0.0.1`.
+### With Signing Certificate
 
-The same bootstrap also supports an existing DefectDojo checkout with local
-Compose edits. Choose whether it must reuse already-pulled images or pull the
-exact 2.58.3 images:
+Download both repositories with the signing certificate, then update the
+downloaded DefectDojo Compose file as required by your environment:
 
 ```bash
-CORPORATE_CA="/absolute/path/to/rak-ca-bundle.pem"
-DEFECTDOJO_DIR="/absolute/path/to/defectdojo-2.58.3"
+INSTALL_ROOT="$HOME/dojo-permission"
+export SIGNING_CERTIFICATE="/absolute/path/to/ca-bundle.pem"
+test -r "$SIGNING_CERTIFICATE"
 
-# No registry pulls; required DD, PostgreSQL, and Valkey images are local:
-bash deploy/bootstrap-local-docker.sh \
-  --existing-defectdojo-dir "$DEFECTDOJO_DIR" \
-  --image-source local \
-  --ca-bundle "$CORPORATE_CA"
+mkdir -p "$INSTALL_ROOT"
+cd "$INSTALL_ROOT"
 
-# Or explicitly pull the required release images:
-bash deploy/bootstrap-local-docker.sh \
-  --existing-defectdojo-dir "$DEFECTDOJO_DIR" \
-  --image-source pull \
-  --ca-bundle "$CORPORATE_CA"
+git -c http.sslCAInfo="$SIGNING_CERTIFICATE" clone \
+  https://github.com/madhav-dhungana/dojo-permission-adon.git
+
+git -c http.sslCAInfo="$SIGNING_CERTIFICATE" clone \
+  --branch 2.58.3 \
+  --single-branch \
+  https://github.com/DefectDojo/django-DefectDojo.git \
+  defectdojo-2.58.3
+
+# Edit defectdojo-2.58.3/docker-compose.yml before continuing.
+cd "$INSTALL_ROOT/dojo-permission-adon"
+bash deploy/install-local.sh --with-signing-certificate
 ```
 
-Existing-checkout mode permits a dirty or non-Git source tree but still
-verifies the actual runtime image as DefectDojo 2.58.3, Django 5.2.14, and
-Python 3.13. It applies Compose changes but does not build DefectDojo
-application-source edits from the checkout. A repeatable `--compose-file FILE`
-option adds office-specific Compose overrides without modifying the checkout.
-`--ca-bundle FILE` mounts a per-developer combined corporate/public CA bundle
-into the Python services; it does not configure Docker daemon trust for image
-pulls.
+Docker or Docker Desktop must also trust the signing certificate before it
+can pull images. This is a host setting; Compose environment variables cannot
+fix a Docker daemon certificate error. The installer does not accept the
+certificate path; it uses the settings you put in DefectDojo's Compose file.
+The checkout's `.env` file is intentionally ignored. Export each
+signing-certificate variable you add or reference in `docker-compose.yml` in
+the same shell before running the installer, or use literal values in the
+Compose file.
+
+Without Signing Certificate builds the pinned DefectDojo source. With Signing
+Certificate reads the sibling `defectdojo-2.58.3/docker-compose.yml` and pulls
+the required release images. Both choices build the permission-enabled Django
+image, start the complete stack, apply migrations, and validate the result.
+Compose edits in the signing-certificate choice are retained. The installer
+does not reset the DefectDojo checkout, run `compose down`, or delete volumes.
+Direct `docker compose up` is not a replacement for the first installation
+because it does not perform the library build, migrations, and validation.
+The path-specific Compose project prevents ownership/name collisions, but an
+old running stack can still occupy ports `18080` and `18443`. Stop that known
+stack from its original checkout, or choose free ports for this run:
+
+```bash
+DD_PORT=18081 DD_TLS_PORT=18444 bash deploy/install-local.sh
+```
 
 See the
-[local Docker bootstrap guide](https://github.com/madhav-dhungana/dojo-permission-adon/blob/main/docs/LOCAL_BOOTSTRAP.md)
-for copy/paste commands, Compose ordering, certificate trust boundaries, and
-troubleshooting.
+[local installation guide](https://github.com/madhav-dhungana/dojo-permission-adon/blob/main/docs/LOCAL_BOOTSTRAP.md)
+for certificate trust, the generated Compose project name, and troubleshooting.
 
-A successful run ends with:
+The Without Signing Certificate run ends with output like:
 
 ```text
 Local staging is ready
@@ -96,23 +116,23 @@ URL:              http://127.0.0.1:18080/login
 Admin username:   admin
 ```
 
-The checkout directory, Compose project name, ports, health URL, and timeouts
-are configurable:
+To preview the resolved paths and command without changing Docker state, run:
 
 ```bash
-bash deploy/bootstrap-local-docker.sh --help
+bash deploy/install-local.sh --dry-run
 ```
 
-The bootstrap is safe to rerun with the same checkout and Compose project. It
+Use `bash deploy/install-local.sh --help` to display the two choices.
+
+The installer is safe to rerun with the same checkout and Compose project. It
 may recreate its service containers, but it does not reset a checkout, run
 `compose down`, or delete persistent volumes or application data.
 
-After a successful run, the script prints the exact status and admin-password
-reset commands with every required environment value and Compose file. Use
-those printed commands for that stack; they include image-specific helper
-tags, optional office overrides, and the optional CA overlay.
+After a successful run, the installer prints the exact status and
+admin-password reset commands with every required environment value and
+Compose file. Use those printed commands for that stack.
 
-Run the bootstrap again to rebuild or recreate missing containers. Never add
+Run the installer again to rebuild or recreate missing containers. Never add
 `--volumes` to a removal command unless deleting the local database and uploads
 is intentional.
 
