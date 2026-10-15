@@ -219,6 +219,18 @@ bind only to `127.0.0.1`. Do not expose it directly to the Internet.
 
 ## 8. Troubleshooting
 
+### Docker reports `operation not permitted` for a path inside Trash
+
+The installation was launched from a directory that had been moved to macOS
+Trash. A terminal can retain that working directory, so repeating the clone
+commands there creates another installation inside Trash. Docker Desktop
+cannot bind-mount its settings folder from that location.
+
+Restore the existing installation outside Trash, or start a fresh checkout
+from your intended installation folder. Open a terminal in that library
+directory and use `pwd -P` to confirm the physical path before retrying. Both
+scripts reject Trash paths before downloading images or starting containers.
+
 ### The path contains repeated `dojo-permission` directories
 
 The clone commands were probably run while already inside a previous library

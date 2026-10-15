@@ -2,6 +2,19 @@
 
 # Shared environment, path, and project setup for local installation commands.
 
+local_require_usable_checkout_path() {
+    local checkout_path="$1"
+
+    case "$checkout_path/" in
+        */.Trash/*|*/.Trashes/*)
+            printf 'ERROR: Checkout is inside Trash: %s\n' "$checkout_path" >&2
+            printf 'Restore the existing installation or start fresh in a normal folder, then open a terminal there before retrying. Docker cannot bind-mount this Trash path.\n' >&2
+            return 1
+            ;;
+    esac
+    return 0
+}
+
 local_add_docker_bin_to_path() {
     local docker_bin="$1"
 

@@ -393,3 +393,65 @@ printf '%s\n' "$PATH"
 ''')
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == str(initial)
+
+
+@pytest.mark.parametrize("path", [
+    "/Users/example/.Trash",
+    "/Users/example/.Trash/dojo permission",
+    "/Volumes/External Drive/.Trashes",
+    "/Volumes/External Drive/.Trashes/501/defectdojo-2.58.3",
+])
+def test_checkout_guard_rejects_trash_paths_without_accessing_them(path):
+    result = subprocess.run(
+        [
+            "/bin/bash", "-c",
+            'source "$1"; local_require_usable_checkout_path "$2"',
+            "trash-path-regression", str(REPOSITORY / "deploy/local-stack-common.sh"), path,
+        ],
+        text=True, capture_output=True, timeout=10,
+    )
+    assert result.returncode != 0
+    assert "Trash" in result.stderr and "restore" in result.stderr.lower()
+
+
+@pytest.mark.parametrize("script", ["bootstrap-local-docker.sh", "install-local.sh"])
+@pytest.mark.parametrize("trash_component", [".Trash", ".Trashes/501"])
+def test_library_in_trash_refuses_before_docker_clone_or_dry_run(tmp_path, script, trash_component):
+    temporary_trash = tmp_path / trash_component
+    temporary_trash.mkdir(parents=True)
+    stack = LocalStack(temporary_trash)
+    args = ("--dry-run",) if script == "install-local.sh" else ()
+    result = stack.run(script, *args)
+    assert result.returncode != 0
+    assert "Trash" in result.stderr
+    assert stack.calls == []
+    assert not stack.dojo.exists()
+    assert not (stack.library / ".dojo-permission-local").exists()
+
+
+@pytest.mark.parametrize("script", ["bootstrap-local-docker.sh", "install-local.sh"])
+def test_defectdojo_symlink_into_trash_is_resolved_before_early_refusal(stack, tmp_path, script):
+    target = tmp_path / "External Drive" / ".Trashes" / "501" / "defectdojo-2.58.3"
+    target.mkdir(parents=True)
+    compose = target / "docker-compose.yml"
+    compose.write_text("services: {}\n# preserved existing checkout\n")
+    original = compose.read_bytes()
+    stack.dojo.symlink_to(target, target_is_directory=True)
+    args = ("--dry-run",) if script == "install-local.sh" else ()
+    result = stack.run(script, *args)
+    assert result.returncode != 0
+    assert "Trash" in result.stderr
+    assert stack.calls == []
+    assert compose.read_bytes() == original
+    assert stack.dojo.is_symlink()
+
+
+@pytest.mark.parametrize("name", ["trash-test/project", ".Trash-backup"])
+def test_ordinary_checkout_names_containing_trash_are_allowed(tmp_path, name):
+    root = tmp_path / name
+    root.mkdir(parents=True)
+    stack = LocalStack(root)
+    result = stack.run()
+    assert result.returncode == 42, result.stdout + result.stderr
+    assert "controlled image-build failure" in result.stderr
+    assert (stack.dojo / "docker-compose.yml").is_file()

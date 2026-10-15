@@ -232,7 +232,9 @@ fi
     "The health URL must use http:// or https://"
 [[ "$HEALTH_URL" != *[[:space:]]* ]] || die "The health URL must not contain whitespace"
 
+local_require_usable_checkout_path "$LIBRARY_ROOT"
 DEFECTDOJO_DIR="$(local_checkout_path "$DEFECTDOJO_DIR")"
+local_require_usable_checkout_path "$DEFECTDOJO_DIR"
 if [[ "$PROJECT_NAME_WAS_SET" != true ]]; then
     PROJECT_NAME="$(local_default_project_name "$LIBRARY_ROOT" "$DEFECTDOJO_DIR")"
 fi

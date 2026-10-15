@@ -99,7 +99,9 @@ done
 
 [[ -x "$BOOTSTRAP" ]] || die "Bootstrap script is missing or not executable: $BOOTSTRAP"
 
+local_require_usable_checkout_path "$LIBRARY_ROOT"
 DEFECTDOJO_DIR="$(local_checkout_path "$DEFECTDOJO_DIR")"
+local_require_usable_checkout_path "$DEFECTDOJO_DIR"
 DEFECTDOJO_EXISTS="false"
 if [[ -e "$DEFECTDOJO_DIR" ]]; then
     [[ -d "$DEFECTDOJO_DIR" ]] || die "DefectDojo path is not a directory: $DEFECTDOJO_DIR"

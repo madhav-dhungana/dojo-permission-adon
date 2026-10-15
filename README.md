@@ -38,6 +38,9 @@ From the directory where you want to keep the installation, clone the library
 and run the bootstrap script. It downloads DefectDojo beside the library before
 building and starting the stack.
 
+Use a normal folder outside Trash. If you moved an earlier installation to
+Trash, open a terminal in the intended folder before running these commands.
+
 ```bash
 mkdir -p dojo-permission
 cd dojo-permission
