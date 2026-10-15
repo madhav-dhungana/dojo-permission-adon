@@ -1,6 +1,19 @@
 #!/usr/bin/env bash
 
-# Shared path and project resolution for the two local installation commands.
+# Shared environment, path, and project setup for local installation commands.
+
+local_add_docker_bin_to_path() {
+    local docker_bin="$1"
+
+    if [[ -x "$docker_bin/docker" ]]; then
+        case ":${PATH:-}:" in
+            *":$docker_bin:"*) ;;
+            *) PATH="${PATH:+$PATH:}$docker_bin" ;;
+        esac
+        export PATH
+    fi
+    return 0
+}
 
 local_checkout_path() {
     local supplied_path="$1"

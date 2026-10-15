@@ -255,6 +255,24 @@ DD_PORT=18081 DD_TLS_PORT=18444 \
   bash deploy/install-local.sh --with-signing-certificate
 ```
 
+### Docker cannot find `docker-credential-desktop`
+
+Docker needs its credential helper on `PATH` when pulling images. On macOS,
+the bootstrap adds the installed Docker Desktop directory
+`/Applications/Docker.app/Contents/Resources/bin` to its own process environment.
+If an older checkout fails with `docker-credential-desktop: executable file not
+found in $PATH`, update the library and rerun from the same library directory:
+
+```bash
+git pull --ff-only
+bash deploy/bootstrap-local-docker.sh
+```
+
+This reuses the downloaded DefectDojo checkout and available build cache. If
+Docker Desktop is installed somewhere else, add that installation's
+`Contents/Resources/bin` directory to your shell's `PATH` before running the
+script.
+
 ### DefectDojo outbound HTTPS reports an unknown certificate authority
 
 Confirm that the downloaded Compose configuration supplies the correct

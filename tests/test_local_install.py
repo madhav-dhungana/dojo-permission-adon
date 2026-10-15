@@ -236,3 +236,89 @@ def test_legacy_project_reused_only_for_matching_ownership(stack, legacy, script
         build = next(call for call in stack.calls if call[:2] == ["docker", "compose"] and "build" in call)
         assert compose_project(build) == expected
     assert state.read_bytes() == original
+
+
+@pytest.fixture
+def desktop_bins(tmp_path):
+    initial = tmp_path / "initial commands"
+    desktop = tmp_path / "Docker Desktop.app" / "Contents" / "Resources" / "bin"
+    initial.mkdir()
+    desktop.mkdir(parents=True)
+    for name, body in {
+        "docker": 'exec docker-credential-desktop "$@"',
+        "docker-credential-desktop": 'printf "desktop credential: %s\\n" "$1"',
+    }.items():
+        executable = desktop / name
+        executable.write_text(f"#!/bin/sh\n{body}\n")
+        executable.chmod(0o755)
+    return initial, desktop
+
+
+def run_docker_path_helper(initial, desktop, body):
+    return subprocess.run(
+        [
+            "/bin/bash", "-c",
+            'set -eu\nsource "$1"\n' + body,
+            "path-regression", str(REPOSITORY / "deploy/local-stack-common.sh"), str(desktop),
+        ],
+        env={"PATH": str(initial)}, text=True, capture_output=True, timeout=10,
+    )
+
+
+def test_desktop_path_enables_docker_credentials_and_is_exported(desktop_bins):
+    initial, desktop = desktop_bins
+    result = run_docker_path_helper(initial, desktop, r'''
+! command -v docker
+! command -v docker-credential-desktop
+export -n PATH
+local_add_docker_bin_to_path "$2"
+docker parent
+/bin/sh -c 'docker child'
+''')
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines() == ["desktop credential: parent", "desktop credential: child"]
+
+
+def test_desktop_path_preserves_existing_cli_and_helper_preference(desktop_bins):
+    initial, desktop = desktop_bins
+    for name, output in {"docker": "preferred CLI", "docker-credential-desktop": "preferred helper"}.items():
+        executable = initial / name
+        executable.write_text(f"#!/bin/sh\nprintf '%s\\n' '{output}'\n")
+        executable.chmod(0o755)
+    result = run_docker_path_helper(initial, desktop, r'''
+local_add_docker_bin_to_path "$2"
+docker
+docker-credential-desktop
+printf '%s\n' "$PATH"
+''')
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines() == ["preferred CLI", "preferred helper", f"{initial}:{desktop}"]
+
+
+def test_desktop_path_is_not_added_twice(desktop_bins):
+    initial, desktop = desktop_bins
+    result = run_docker_path_helper(initial, desktop, r'''
+local_add_docker_bin_to_path "$2"
+export -n PATH
+local_add_docker_bin_to_path "$2"
+printf '%s\n' "$PATH"
+/bin/sh -c 'docker child'
+''')
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines() == [f"{initial}:{desktop}", "desktop credential: child"]
+
+
+@pytest.mark.parametrize("installation", ["missing-directory", "nonexecutable-docker"])
+def test_unavailable_desktop_installations_leave_path_unchanged(desktop_bins, installation):
+    initial, desktop = desktop_bins
+    if installation == "missing-directory":
+        desktop = desktop.parent / "not installed"
+    else:
+        (desktop / "docker").chmod(0o644)
+    result = run_docker_path_helper(initial, desktop, r'''
+local_add_docker_bin_to_path "$2"
+printf '%s\n' "$PATH"
+! command -v docker
+''')
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == str(initial)

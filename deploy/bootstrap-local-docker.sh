@@ -270,10 +270,11 @@ fi
 need git
 need curl
 
+# Docker launches credential helpers through PATH, including during image pulls.
+local_add_docker_bin_to_path /Applications/Docker.app/Contents/Resources/bin
+
 if command -v docker >/dev/null 2>&1; then
     DOCKER=(docker)
-elif [[ -x /Applications/Docker.app/Contents/Resources/bin/docker ]]; then
-    DOCKER=(/Applications/Docker.app/Contents/Resources/bin/docker)
 else
     die "Docker CLI not found. Install and start Docker before continuing."
 fi
