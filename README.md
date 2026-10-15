@@ -183,6 +183,35 @@ is intentional.
 > expose it directly to the Internet or apply its Compose overlay to an
 > existing customized deployment.
 
+### Admin login and password
+
+The username is `admin`. The first initialization prints its generated
+password in the initializer log. Set `DOJO_PROJECT` to the Compose project name
+printed at the start of your bootstrap run; it depends on the checkout path.
+
+```bash
+# macOS Docker Desktop: make Docker available in this shell.
+export PATH="/Applications/Docker.app/Contents/Resources/bin:$PATH"
+
+# Replace this placeholder with your bootstrap's Compose project name.
+DOJO_PROJECT="replace-with-your-compose-project-name"
+
+docker logs "${DOJO_PROJECT}-initializer-1" 2>&1 |
+  grep 'Admin password:'
+```
+
+If no password appears, the admin account may already exist or its first-run
+log may have been replaced. If you do not know the current password, set a new
+one interactively while the web service is running:
+
+```bash
+docker exec -it "${DOJO_PROJECT}-uwsgi-1" \
+  python manage.py changepassword admin
+```
+
+Enter and confirm the new password at the prompts, then sign in at
+<http://127.0.0.1:18080/login> (or your configured HTTP port).
+
 ## Existing customized deployments
 
 Two supported approaches produce an immutable derived Django image and use the
