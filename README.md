@@ -49,6 +49,19 @@ cd dojo-permission-adon
 bash deploy/bootstrap-local-docker.sh
 ```
 
+If Docker Desktop fails with `docker-credential-desktop: executable file not
+found in $PATH`, update the library and retry. The bootstrap now makes Docker
+Desktop's credential-helper directory available automatically. Replace the
+placeholder below with your existing library checkout path:
+
+```bash
+cd "/absolute/path/to/dojo-permission-adon"
+git pull --ff-only
+bash deploy/bootstrap-local-docker.sh
+```
+
+This reuses the downloaded DefectDojo checkout and available build cache.
+
 If a later build or startup step fails, the completed
 `../defectdojo-2.58.3` checkout stays on disk. Edit its `docker-compose.yml` as
 needed, then run this from the library directory to continue with that file:
