@@ -1,0 +1,51 @@
+# Copy this file to deploy/install-existing.conf, then edit its values.
+# This is a trusted Bash configuration file. Keep it private and out of Git.
+
+PROJECT_DIRECTORY="/absolute/path/to/defectdojo"
+PROJECT_NAME="defectdojo"
+
+# Include every existing Compose file, in its normal order. Do not include
+# compose.permission.yml from the local bootstrap or the generated release file.
+COMPOSE_FILES=(
+  "$PROJECT_DIRECTORY/docker-compose.yml"
+  # "$PROJECT_DIRECTORY/docker-compose.override.yml"
+)
+
+# Empty uses Compose's normal .env handling. Set a path for an explicit env file.
+ENV_FILE=""
+
+# This existing file must already be bind-mounted for all four Python services,
+# either directly or through their existing extra_settings/settings directory.
+# The installer preserves its content and appends one gated integration hook.
+SETTINGS_FILE="$PROJECT_DIRECTORY/docker/extra_settings/local_settings.py"
+HEALTH_URL="http://localhost:8080/login"
+
+# Leave empty to create and validate a PostgreSQL dump automatically using the
+# existing local postgres service. For an external database, provide an existing,
+# tested database/configuration backup file or non-empty directory instead.
+BACKUP_EVIDENCE=""
+POSTGRES_SERVICE="postgres"
+
+# Export any values normally supplied in the shell when Compose runs. They are
+# also recorded privately in the generated Compose launcher. Existing service
+# signing-certificate mounts/environment are preserved without changes.
+COMPOSE_ENV=(
+  # "DD_PORT=8080"
+  # "SIGNING_CERTIFICATE=/absolute/path/to/ca-bundle.pem"
+)
+
+# For a host health URL signed by a private CA, uncomment this separate curl CA:
+# export CURL_CA_BUNDLE="/absolute/path/to/ca-bundle.pem"
+
+# These defaults match DefectDojo's standard Compose service names.
+WEB_SERVICE="uwsgi"
+INITIALIZER_SERVICE="initializer"
+WORKER_SERVICE="celeryworker"
+BEAT_SERVICE="celerybeat"
+PROXY_SERVICE="nginx"
+RESTART_PROXY=true
+
+# Normally keep these defaults. Include the generated release override in all
+# future operations, using the generated .dojo-permission-existing/compose.sh.
+RELEASE_OVERRIDE="$PROJECT_DIRECTORY/compose.dojo-permission.release.yml"
+STATE_DIR="$PROJECT_DIRECTORY/.dojo-permission-existing"

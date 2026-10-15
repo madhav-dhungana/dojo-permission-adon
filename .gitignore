@@ -51,6 +51,8 @@ screenshots/
 *.har
 .dojo-permission-deploy/
 .dojo-permission-local/
+.dojo-permission-existing/
+/deploy/install-existing.conf
 compose.dojo-permission.*.yml
 
 # Local staging tools. These can reset accounts or contain sensitive HTML.

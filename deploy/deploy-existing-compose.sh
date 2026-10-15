@@ -18,6 +18,7 @@ WORKER_SERVICE="celeryworker"
 BEAT_SERVICE="celerybeat"
 PROXY_SERVICE="nginx"
 RESTART_PROXY=1
+LIBRARY_ONLY=0
 COMPOSE_FILES=()
 
 usage() {
@@ -60,6 +61,8 @@ Optional:
   --beat-service NAME           default: celerybeat
   --proxy-service NAME          default: nginx
   --no-proxy-restart            do not restart the unchanged proxy container
+  --library-only                apply only dojo_permission migrations; do not
+                                run the deployment's full initializer
   --apply                       perform migration and cutover
   -h, --help
 
@@ -170,6 +173,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --no-proxy-restart)
             RESTART_PROXY=0
+            shift
+            ;;
+        --library-only)
+            LIBRARY_ONLY=1
             shift
             ;;
         --apply)
@@ -508,25 +515,44 @@ fi
 
 RELEASE_COMPOSE=("${COMPOSE[@]}" -f "$RELEASE_CANDIDATE")
 ROLLBACK_COMPOSE=("${COMPOSE[@]}" -f "$ROLLBACK_OVERRIDE")
+
+# A one-off entrypoint bypasses DefectDojo's normal settings-copy step. Load
+# the same mounted settings before running Django in the candidate image.
+candidate_django() {
+    "${RELEASE_COMPOSE[@]}" run --rm --no-deps --entrypoint /bin/sh \
+        "$WEB_SERVICE" -c '
+set -e
+for settings_file in /app/docker/extra_settings/*; do
+    [ -f "$settings_file" ] || continue
+    cp "$settings_file" /app/dojo/settings/
+done
+exec python manage.py "$@"
+' dojo-permission-django "$@"
+}
+
 if ! "${RELEASE_COMPOSE[@]}" config -q; then
     restore_original_settings || true
     die "The generated release override is not valid with the supplied Compose files"
 fi
 
-printf 'Running the customized deployment initializer with the derived image...\n'
-if ! "${RELEASE_COMPOSE[@]}" run --rm --no-deps "$INITIALIZER_SERVICE"; then
+printf 'Applying the candidate image migrations...\n'
+if [[ "$LIBRARY_ONLY" -eq 1 ]]; then
+    candidate_django migrate dojo_permission --noinput
+else
+    "${RELEASE_COMPOSE[@]}" run --rm --no-deps "$INITIALIZER_SERVICE"
+fi || {
     trap - INT TERM HUP
     if restore_original_settings; then
-        die "Initializer failed; running services were not replaced and settings were restored"
+        die "Candidate migration failed; running services were not replaced and settings were restored"
     fi
-    die "Initializer failed and the original settings could not be restored from $SETTINGS_BACKUP"
-fi
-if ! "${RELEASE_COMPOSE[@]}" run --rm --no-deps --entrypoint python "$WEB_SERVICE" manage.py check; then
+    die "Candidate migration failed and the original settings could not be restored from $SETTINGS_BACKUP"
+}
+if ! candidate_django check; then
     trap - INT TERM HUP
     restore_original_settings || true
     die "Derived-image Django checks failed before cutover"
 fi
-if ! PRE_CUTOVER_MIGRATIONS="$("${RELEASE_COMPOSE[@]}" run --rm --no-deps --entrypoint python "$WEB_SERVICE" manage.py showmigrations dojo_permission)"; then
+if ! PRE_CUTOVER_MIGRATIONS="$(candidate_django showmigrations dojo_permission)"; then
     trap - INT TERM HUP
     restore_original_settings || true
     die "Could not read dojo_permission migration state before cutover"

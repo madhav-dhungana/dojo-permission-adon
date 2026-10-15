@@ -214,15 +214,48 @@ Enter and confirm the new password at the prompts, then sign in at
 
 ## Existing customized deployments
 
-Two supported approaches produce an immutable derived Django image and use the
-same plan-first cutover:
+For a running DefectDojo 2.58.3 instance, clone the library on its Docker host,
+copy the configuration template, and edit that one file:
+
+```bash
+git clone https://github.com/madhav-dhungana/dojo-permission-adon.git
+cd dojo-permission-adon
+cp deploy/install-existing.conf.example deploy/install-existing.conf
+```
+
+Set the existing Compose project directory/name, ordered Compose files,
+settings file, and health URL in `deploy/install-existing.conf`. Then run:
+
+```bash
+bash deploy/install-existing.sh
+```
+
+The script discovers the exact running Django image, builds the library on top
+of it, backs up the settings and local PostgreSQL database, installs the
+library, and restarts the application services. An external database requires
+an existing backup instead. The generated Compose override retains the
+deployment's volumes, ports, certificate settings, customizations, and nginx
+image. A brief application outage is required.
+
+After installation, use the generated `compose.sh` command printed by the
+installer for future Compose operations; it includes the library override and
+the deployment's interpolation settings. Rerunning the installer verifies its
+existing installation.
+
+Follow the
+[existing-instance installation guide](https://github.com/madhav-dhungana/dojo-permission-adon/blob/main/docs/INSTALL_EXISTING.md)
+for the configuration fields, backup behavior, verification, and rollback.
+The two local installation workflows above are unchanged.
+
+For explicit image publishing or a separately reviewed cutover, the advanced
+deployment guide provides two approaches:
 
 | Approach | Use it when |
 | --- | --- |
 | **Registry/CI** | The exact currently deployed image is available as `repository@sha256:digest`; build, push, and deploy the resulting digest. |
 | **On-host** | The exact image exists only in the deployment host's Docker daemon as `sha256:image-id`; build and deploy locally without a registry. |
 
-Start with the guarded builder rather than invoking `docker build` directly:
+The advanced builder and cutover commands are available separately:
 
 ```bash
 bash deploy/build-derived-image.sh --help

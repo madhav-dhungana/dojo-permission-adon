@@ -1,5 +1,10 @@
 # Deployment guide
 
+For the simpler on-host workflow, copy and edit one configuration file, then
+run `bash deploy/install-existing.sh`. Start with the
+[existing-instance installation guide](INSTALL_EXISTING.md). This document
+covers the advanced registry and explicit cutover commands.
+
 This guide installs the library into an existing customized DefectDojo 2.58.3
 Docker Compose deployment. The included automation supports a **first
 installation** on one host with one web, worker, and beat replica.
