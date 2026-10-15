@@ -1,0 +1,6 @@
+# LOCAL STAGING ONLY.
+# Removes the inherited DefectDojo nginx build when the bootstrap uses an
+# already-present or explicitly pulled 2.58.3 nginx image.
+services:
+  nginx:
+    build: !reset null

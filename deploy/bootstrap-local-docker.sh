@@ -2,8 +2,9 @@
 set -Eeuo pipefail
 umask 077
 
-# This script intentionally creates only a local evaluation stack. It does not
-# modify, upgrade, or deploy to an existing customized DefectDojo instance.
+# This script intentionally creates only a local evaluation stack. Its default
+# mode uses a clean, pinned source checkout. An explicit existing-checkout mode
+# accepts local Compose changes, but still verifies the runtime image versions.
 
 EXPECTED_DD_TAG="2.58.3"
 EXPECTED_DD_COMMIT="ea611112772b08b74e6429e833728ce500b4c284"
@@ -23,8 +24,15 @@ TLS_PORT="${DD_TLS_PORT:-18443}"
 INITIALIZER_TIMEOUT="${DOJO_PERMISSION_INITIALIZER_TIMEOUT:-900}"
 HTTP_TIMEOUT="${DOJO_PERMISSION_HTTP_TIMEOUT:-300}"
 HEALTH_URL="${DOJO_PERMISSION_HEALTH_URL:-}"
+IMAGE_SOURCE="${DOJO_PERMISSION_IMAGE_SOURCE:-build}"
+DEPLOYMENT_MODE="strict"
+CA_BUNDLE=""
+CA_CONTAINER_PATH="/etc/ssl/certs/dojo-permission-ca-bundle.pem"
+DIR_OPTION=""
+EXTRA_COMPOSE_FILES=()
 CLONE_TEMP=""
 STATE_TEMP=""
+CA_TEMP=""
 
 cleanup() {
     if [[ -n "$CLONE_TEMP" && -d "$CLONE_TEMP" ]]; then
@@ -33,12 +41,15 @@ cleanup() {
     if [[ -n "$STATE_TEMP" ]]; then
         rm -f "$STATE_TEMP"
     fi
+    if [[ -n "$CA_TEMP" ]]; then
+        rm -f "$CA_TEMP"
+    fi
 }
 trap cleanup EXIT
 
 usage() {
     cat <<'EOF'
-Create or resume a clean local DefectDojo 2.58.3 permission-library stack.
+Create or resume a local DefectDojo 2.58.3 permission-library stack.
 
 Usage:
   bash deploy/bootstrap-local-docker.sh [options]
@@ -46,6 +57,19 @@ Usage:
 Options:
   --defectdojo-dir DIR  Checkout location. Defaults to defectdojo-2.58.3
                         beside this library checkout.
+  --existing-defectdojo-dir DIR
+                        Use an already downloaded, locally modified checkout.
+                        Compose overrides are applied, but checkout source is
+                        not built. Nothing in DIR is reset or overwritten.
+                        Requires --image-source local or pull.
+  --image-source SOURCE How the official 2.58.3 base images are obtained:
+                          build  build from the pinned clean checkout (default)
+                          local  use already-pulled local images; never pull
+                          pull   explicitly pull the official images
+  --compose-file FILE   Additional Compose override for existing-checkout mode.
+                        May be supplied more than once; order is preserved.
+  --ca-bundle FILE      Host CA bundle to mount read-only in Python services.
+                        Also used by Git if strict mode must clone DefectDojo.
   --project-name NAME   Docker Compose project (default: dojo-permission-dev).
   --port PORT           Local HTTP port (default: 18080).
   --tls-port PORT       Local HTTPS port (default: 18443).
@@ -58,13 +82,15 @@ Options:
   -h, --help            Show this help.
 
 The equivalent environment variables are DEFECTDOJO_DIR,
+DOJO_PERMISSION_IMAGE_SOURCE,
 DOJO_PERMISSION_PROJECT_NAME, DD_PORT, DD_TLS_PORT,
 DOJO_PERMISSION_HEALTH_URL, DOJO_PERMISSION_INITIALIZER_TIMEOUT, and
 DOJO_PERMISSION_HTTP_TIMEOUT.
 
 This is local staging only. It requires Docker Compose 2.24.4 or newer, uses
-DefectDojo's sample Compose stack, and must not be pointed at an existing or
-customized deployment.
+DefectDojo's sample Compose stack, and must not be pointed at a running remote
+or production deployment. --ca-bundle configures Git and the running Python
+containers; Docker daemon registry trust must be configured separately.
 EOF
 }
 
@@ -91,11 +117,45 @@ is_positive_integer() {
     [[ "$1" -gt 0 ]]
 }
 
+print_shell_command() {
+    printf '  '
+    printf '%q ' "$@"
+    printf '\n'
+}
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --defectdojo-dir)
             [[ $# -ge 2 ]] || die "--defectdojo-dir requires a value"
+            [[ -z "$DIR_OPTION" ]] || die \
+                "--defectdojo-dir and --existing-defectdojo-dir are mutually exclusive"
             DEFECTDOJO_DIR="$2"
+            DIR_OPTION="strict"
+            DEPLOYMENT_MODE="strict"
+            shift 2
+            ;;
+        --existing-defectdojo-dir)
+            [[ $# -ge 2 ]] || die "--existing-defectdojo-dir requires a value"
+            [[ -z "$DIR_OPTION" ]] || die \
+                "--defectdojo-dir and --existing-defectdojo-dir are mutually exclusive"
+            DEFECTDOJO_DIR="$2"
+            DIR_OPTION="existing"
+            DEPLOYMENT_MODE="existing"
+            shift 2
+            ;;
+        --image-source)
+            [[ $# -ge 2 ]] || die "--image-source requires a value"
+            IMAGE_SOURCE="$2"
+            shift 2
+            ;;
+        --compose-file)
+            [[ $# -ge 2 ]] || die "--compose-file requires a value"
+            EXTRA_COMPOSE_FILES+=("$2")
+            shift 2
+            ;;
+        --ca-bundle)
+            [[ $# -ge 2 ]] || die "--ca-bundle requires a value"
+            CA_BUNDLE="$2"
             shift 2
             ;;
         --project-name)
@@ -138,6 +198,20 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+case "$IMAGE_SOURCE" in
+    build|local|pull) ;;
+    *) die "Invalid image source: $IMAGE_SOURCE (expected build, local, or pull)" ;;
+esac
+if [[ "$DEPLOYMENT_MODE" == strict ]]; then
+    [[ "$IMAGE_SOURCE" == build ]] || die \
+        "--image-source local or pull requires --existing-defectdojo-dir"
+    [[ ${#EXTRA_COMPOSE_FILES[@]} -eq 0 ]] || die \
+        "--compose-file requires --existing-defectdojo-dir"
+else
+    [[ "$IMAGE_SOURCE" == local || "$IMAGE_SOURCE" == pull ]] || die \
+        "--existing-defectdojo-dir requires --image-source local or pull"
+fi
+
 is_port "$HTTP_PORT" || die "Invalid HTTP port: $HTTP_PORT"
 is_port "$TLS_PORT" || die "Invalid HTTPS port: $TLS_PORT"
 [[ "$HTTP_PORT" != "$TLS_PORT" ]] || die "HTTP and HTTPS ports must differ"
@@ -155,6 +229,35 @@ case "$DEFECTDOJO_DIR" in
     /*) ;;
     *) DEFECTDOJO_DIR="$(pwd -P)/$DEFECTDOJO_DIR" ;;
 esac
+
+if [[ -n "$CA_BUNDLE" ]]; then
+    case "$CA_BUNDLE" in
+        /*) ;;
+        *) CA_BUNDLE="$(pwd -P)/$CA_BUNDLE" ;;
+    esac
+    [[ -f "$CA_BUNDLE" && -r "$CA_BUNDLE" ]] || die \
+        "CA bundle is not a readable regular file: $CA_BUNDLE"
+    CA_BUNDLE="$(cd "$(dirname "$CA_BUNDLE")" && pwd -P)/$(basename "$CA_BUNDLE")"
+    grep -F -- '-----BEGIN CERTIFICATE-----' "$CA_BUNDLE" >/dev/null || die \
+        "CA bundle contains no PEM certificates: $CA_BUNDLE"
+    if grep -E -- '-----BEGIN ([A-Z0-9]+ )?PRIVATE KEY-----' "$CA_BUNDLE" >/dev/null; then
+        die "CA bundle must not contain a private key: $CA_BUNDLE"
+    fi
+fi
+
+if [[ ${#EXTRA_COMPOSE_FILES[@]} -gt 0 ]]; then
+    for EXTRA_INDEX in "${!EXTRA_COMPOSE_FILES[@]}"; do
+        EXTRA_COMPOSE_FILE="${EXTRA_COMPOSE_FILES[$EXTRA_INDEX]}"
+        case "$EXTRA_COMPOSE_FILE" in
+            /*) ;;
+            *) EXTRA_COMPOSE_FILE="$(pwd -P)/$EXTRA_COMPOSE_FILE" ;;
+        esac
+        [[ -f "$EXTRA_COMPOSE_FILE" && -r "$EXTRA_COMPOSE_FILE" ]] || die \
+            "Compose override is not a readable regular file: $EXTRA_COMPOSE_FILE"
+        EXTRA_COMPOSE_FILES[$EXTRA_INDEX]="$(cd "$(dirname "$EXTRA_COMPOSE_FILE")" && pwd -P)/$(basename "$EXTRA_COMPOSE_FILE")"
+    done
+    unset EXTRA_INDEX EXTRA_COMPOSE_FILE
+fi
 
 need git
 need curl
@@ -194,39 +297,68 @@ or reset an existing checkout.
 
 Library:    $LIBRARY_ROOT
 DefectDojo: $DEFECTDOJO_DIR
+Mode:       $DEPLOYMENT_MODE checkout, $IMAGE_SOURCE images
 HTTP URL:   http://127.0.0.1:$HTTP_PORT/login
 EOF
 
-if [[ ! -e "$DEFECTDOJO_DIR" ]]; then
-    [[ -d "$(dirname "$DEFECTDOJO_DIR")" ]] || die "Parent directory does not exist: $(dirname "$DEFECTDOJO_DIR")"
-    printf '\nCloning DefectDojo %s...\n' "$EXPECTED_DD_TAG"
-    CLONE_TEMP="$(mktemp -d "$(dirname "$DEFECTDOJO_DIR")/.defectdojo-2.58.3.clone.XXXXXX")"
-    git clone --branch "$EXPECTED_DD_TAG" --single-branch \
-        "$DEFECTDOJO_REPOSITORY" "$CLONE_TEMP"
-    [[ "$(git -C "$CLONE_TEMP" rev-parse HEAD)" == "$EXPECTED_DD_COMMIT" ]] || die \
-        "The cloned DefectDojo tag did not resolve to the pinned commit"
-    mv "$CLONE_TEMP" "$DEFECTDOJO_DIR"
-    CLONE_TEMP=""
+if [[ -n "$CA_BUNDLE" ]]; then
+    cat <<EOF
+CA bundle:  $CA_BUNDLE
+
+The CA bundle is used for Git, the host health check, and Python services.
+Docker registry trust is controlled by the Docker daemon, not this option.
+EOF
 fi
 
-[[ -d "$DEFECTDOJO_DIR" ]] || die "DefectDojo path is not a directory: $DEFECTDOJO_DIR"
-git -C "$DEFECTDOJO_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
-    || die "Existing DefectDojo path is not a Git checkout: $DEFECTDOJO_DIR"
+if [[ "$DEPLOYMENT_MODE" == strict ]]; then
+    if [[ ! -e "$DEFECTDOJO_DIR" ]]; then
+        [[ -d "$(dirname "$DEFECTDOJO_DIR")" ]] || die \
+            "Parent directory does not exist: $(dirname "$DEFECTDOJO_DIR")"
+        printf '\nCloning DefectDojo %s...\n' "$EXPECTED_DD_TAG"
+        CLONE_TEMP="$(mktemp -d "$(dirname "$DEFECTDOJO_DIR")/.defectdojo-2.58.3.clone.XXXXXX")"
+        GIT_CLONE=(git)
+        if [[ -n "$CA_BUNDLE" ]]; then
+            GIT_CLONE+=(-c "http.sslCAInfo=$CA_BUNDLE")
+        fi
+        "${GIT_CLONE[@]}" clone --branch "$EXPECTED_DD_TAG" --single-branch \
+            "$DEFECTDOJO_REPOSITORY" "$CLONE_TEMP"
+        unset GIT_CLONE
+        [[ "$(git -C "$CLONE_TEMP" rev-parse HEAD)" == "$EXPECTED_DD_COMMIT" ]] || die \
+            "The cloned DefectDojo tag did not resolve to the pinned commit"
+        mv "$CLONE_TEMP" "$DEFECTDOJO_DIR"
+        CLONE_TEMP=""
+    fi
 
-DEFECTDOJO_DIR="$(cd "$DEFECTDOJO_DIR" && pwd -P)"
-ACTUAL_COMMIT="$(git -C "$DEFECTDOJO_DIR" rev-parse HEAD)"
-ACTUAL_TAG="$(git -C "$DEFECTDOJO_DIR" describe --tags --exact-match HEAD 2>/dev/null || true)"
+    [[ -d "$DEFECTDOJO_DIR" ]] || die "DefectDojo path is not a directory: $DEFECTDOJO_DIR"
+    git -C "$DEFECTDOJO_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
+        || die "Existing DefectDojo path is not a Git checkout: $DEFECTDOJO_DIR"
 
-[[ "$ACTUAL_COMMIT" == "$EXPECTED_DD_COMMIT" ]] || die \
-    "DefectDojo must be commit $EXPECTED_DD_COMMIT; found $ACTUAL_COMMIT. This script will not reset an existing checkout."
-[[ "$ACTUAL_TAG" == "$EXPECTED_DD_TAG" ]] || die \
-    "DefectDojo HEAD must have exact tag $EXPECTED_DD_TAG; found ${ACTUAL_TAG:-no exact tag}."
-[[ -z "$(git -C "$DEFECTDOJO_DIR" status --porcelain)" ]] || die \
-    "DefectDojo has local changes. Use a clean 2.58.3 checkout for this staging stack."
-[[ ! -e "$DEFECTDOJO_DIR/.env" ]] || die \
-    "Remove or move $DEFECTDOJO_DIR/.env; local bootstrap uses a controlled Compose environment."
+    DEFECTDOJO_DIR="$(cd "$DEFECTDOJO_DIR" && pwd -P)"
+    ACTUAL_COMMIT="$(git -C "$DEFECTDOJO_DIR" rev-parse HEAD)"
+    ACTUAL_TAG="$(git -C "$DEFECTDOJO_DIR" describe --tags --exact-match HEAD 2>/dev/null || true)"
+
+    [[ "$ACTUAL_COMMIT" == "$EXPECTED_DD_COMMIT" ]] || die \
+        "DefectDojo must be commit $EXPECTED_DD_COMMIT; found $ACTUAL_COMMIT. This script will not reset an existing checkout."
+    [[ "$ACTUAL_TAG" == "$EXPECTED_DD_TAG" ]] || die \
+        "DefectDojo HEAD must have exact tag $EXPECTED_DD_TAG; found ${ACTUAL_TAG:-no exact tag}."
+    [[ -z "$(git -C "$DEFECTDOJO_DIR" status --porcelain)" ]] || die \
+        "DefectDojo has local changes. Use --existing-defectdojo-dir with local or pull images to opt in to a modified checkout."
+    [[ ! -e "$DEFECTDOJO_DIR/.env" ]] || die \
+        "Remove or move $DEFECTDOJO_DIR/.env; strict bootstrap uses a controlled Compose environment."
+else
+    [[ -d "$DEFECTDOJO_DIR" ]] || die \
+        "Existing DefectDojo path is not a directory: $DEFECTDOJO_DIR"
+    DEFECTDOJO_DIR="$(cd "$DEFECTDOJO_DIR" && pwd -P)"
+    printf '\nUsing the existing checkout without Git/tag/clean-tree enforcement.\n'
+    printf 'The checkout is never reset, cleaned, or overwritten by this script.\n'
+fi
+
 [[ -f "$DEFECTDOJO_DIR/docker-compose.yml" ]] || die "DefectDojo docker-compose.yml is missing"
 [[ -f "$LIBRARY_ROOT/docker/compose.permission.yml" ]] || die "Permission Compose overlay is missing"
+[[ -f "$LIBRARY_ROOT/docker/compose.permission.prebuilt.yml" ]] || die "Prebuilt-image Compose overlay is missing"
+if [[ -n "$CA_BUNDLE" ]]; then
+    [[ -f "$LIBRARY_ROOT/docker/compose.permission.ca.yml" ]] || die "CA Compose overlay is missing"
+fi
 [[ -f "$LIBRARY_ROOT/integration/extra_settings/local_settings.py" ]] || die "Permission local settings file is missing"
 
 unset DD_DATABASE_URL DD_DATABASE_NAME DD_DATABASE_USER DD_DATABASE_PASSWORD
@@ -252,10 +384,11 @@ export DJANGO_VERSION="$EXPECTED_DD_TAG"
 export NGINX_VERSION="$EXPECTED_DD_TAG"
 export DOJO_PERMISSION_LIBRARY_ROOT="$LIBRARY_ROOT"
 BASE_SOURCE_IMAGE="defectdojo/defectdojo-django:$EXPECTED_DD_TAG"
+NGINX_SOURCE_IMAGE="defectdojo/defectdojo-nginx:$EXPECTED_DD_TAG"
 export DOJO_PERMISSION_BASE_IMAGE="$BASE_SOURCE_IMAGE"
 export DOJO_PERMISSION_IMAGE="dojo-permission/defectdojo-django:$EXPECTED_DD_TAG"
-export DOJO_PERMISSION_NGINX_IMAGE="dojo-permission/defectdojo-nginx:$EXPECTED_DD_TAG"
 export DOJO_PERMISSION_RUNTIME_USER="1001"
+export DOJO_PERMISSION_BUILD_NETWORK="none"
 unset COMPOSE_ENV_FILES COMPOSE_DISABLE_ENV_FILE DOCKER_DEFAULT_PLATFORM
 
 VANILLA_COMPOSE=(
@@ -265,10 +398,20 @@ VANILLA_COMPOSE=(
     --project-name "$PROJECT_NAME"
     --file "$DEFECTDOJO_DIR/docker-compose.yml"
 )
+if [[ ${#EXTRA_COMPOSE_FILES[@]} -gt 0 ]]; then
+    for EXTRA_COMPOSE_FILE in "${EXTRA_COMPOSE_FILES[@]}"; do
+        VANILLA_COMPOSE+=(--file "$EXTRA_COMPOSE_FILE")
+    done
+    unset EXTRA_COMPOSE_FILE
+fi
 PERMISSION_COMPOSE=(
     "${VANILLA_COMPOSE[@]}"
     --file "$LIBRARY_ROOT/docker/compose.permission.yml"
+    --file "$LIBRARY_ROOT/docker/compose.permission.prebuilt.yml"
 )
+if [[ -n "$CA_BUNDLE" ]]; then
+    PERMISSION_COMPOSE+=(--file "$LIBRARY_ROOT/docker/compose.permission.ca.yml")
+fi
 
 STATE_DIR="$LIBRARY_ROOT/.dojo-permission-local"
 STATE_FILE="$STATE_DIR/$PROJECT_NAME.state"
@@ -285,6 +428,7 @@ EXISTING_VOLUME_NAMES="$("${DOCKER[@]}" volume ls -q \
 EXISTING_NETWORK_IDS="$("${DOCKER[@]}" network ls -q \
     --filter "label=com.docker.compose.project=$PROJECT_NAME")"
 
+[[ ! -L "$STATE_DIR" ]] || die "Local stack state directory must not be a symlink: $STATE_DIR"
 [[ ! -L "$STATE_FILE" ]] || die "Local stack state file must not be a symlink: $STATE_FILE"
 if [[ -e "$STATE_FILE" ]]; then
     [[ -f "$STATE_FILE" && ! -L "$STATE_FILE" ]] || die \
@@ -296,12 +440,23 @@ elif [[ -n "$EXISTING_CONTAINER_IDS$EXISTING_VOLUME_NAMES$EXISTING_NETWORK_IDS" 
 else
     [[ ! -e "$STATE_DIR" || -d "$STATE_DIR" ]] || die \
         "Local stack state path is not a directory: $STATE_DIR"
-    [[ ! -L "$STATE_DIR" ]] || die "Local stack state directory must not be a symlink: $STATE_DIR"
     mkdir -p "$STATE_DIR"
     STATE_TEMP="$(mktemp "$STATE_DIR/.state.XXXXXX")"
     printf '%s\n' "$EXPECTED_STATE" > "$STATE_TEMP"
     mv "$STATE_TEMP" "$STATE_FILE"
     STATE_TEMP=""
+fi
+
+if [[ -n "$CA_BUNDLE" ]]; then
+    MANAGED_CA_BUNDLE="$STATE_DIR/$PROJECT_NAME-ca-bundle.pem"
+    [[ ! -L "$MANAGED_CA_BUNDLE" ]] || die \
+        "Managed CA bundle must not be a symlink: $MANAGED_CA_BUNDLE"
+    CA_TEMP="$(mktemp "$STATE_DIR/.ca-bundle.XXXXXX")"
+    cp "$CA_BUNDLE" "$CA_TEMP"
+    chmod 0644 "$CA_TEMP"
+    mv "$CA_TEMP" "$MANAGED_CA_BUNDLE"
+    CA_TEMP=""
+    export DOJO_PERMISSION_CA_BUNDLE="$MANAGED_CA_BUNDLE"
 fi
 
 if [[ -n "$EXISTING_CONTAINER_IDS" ]]; then
@@ -325,35 +480,99 @@ fi
 
 printf '\nVerifying the exact DefectDojo Compose configuration...\n'
 "${VANILLA_COMPOSE[@]}" config -q
+BASE_SERVICES="$("${VANILLA_COMPOSE[@]}" config --services)"
+for REQUIRED_SERVICE in nginx uwsgi initializer celeryworker celerybeat postgres valkey; do
+    printf '%s\n' "$BASE_SERVICES" | grep -Fx "$REQUIRED_SERVICE" >/dev/null || die \
+        "Required Compose service is missing: $REQUIRED_SERVICE"
+done
+unset BASE_SERVICES REQUIRED_SERVICE
 
-printf '\nBuilding the vanilla DefectDojo %s Django image...\n' "$EXPECTED_DD_TAG"
-"${VANILLA_COMPOSE[@]}" build --pull uwsgi
+case "$IMAGE_SOURCE" in
+    build)
+        printf '\nBuilding the pinned DefectDojo %s Django and nginx images...\n' \
+            "$EXPECTED_DD_TAG"
+        "${VANILLA_COMPOSE[@]}" build --pull uwsgi nginx
+        printf 'Pulling the pinned local database and broker images...\n'
+        "${VANILLA_COMPOSE[@]}" pull --policy always postgres valkey
+        ;;
+    pull)
+        printf '\nPulling the exact DefectDojo %s Django and nginx images...\n' \
+            "$EXPECTED_DD_TAG"
+        if ! "${DOCKER[@]}" pull "$BASE_SOURCE_IMAGE" \
+            || ! "${DOCKER[@]}" pull "$NGINX_SOURCE_IMAGE"
+        then
+            die "Could not pull DefectDojo images. Configure Docker daemon/Desktop CA trust, then retry."
+        fi
+        if ! "${VANILLA_COMPOSE[@]}" pull --policy always postgres valkey; then
+            die "Could not pull the local database or broker image"
+        fi
+        ;;
+    local)
+        printf '\nUsing only images already present in the local Docker daemon...\n'
+        "${DOCKER[@]}" image inspect "$BASE_SOURCE_IMAGE" >/dev/null 2>&1 || die \
+            "Missing local image: $BASE_SOURCE_IMAGE"
+        "${DOCKER[@]}" image inspect "$NGINX_SOURCE_IMAGE" >/dev/null 2>&1 || die \
+            "Missing local image: $NGINX_SOURCE_IMAGE"
+        SUPPORT_IMAGES="$("${VANILLA_COMPOSE[@]}" config --images postgres valkey)"
+        while IFS= read -r SUPPORT_IMAGE; do
+            [[ -n "$SUPPORT_IMAGE" ]] || continue
+            "${DOCKER[@]}" image inspect "$SUPPORT_IMAGE" >/dev/null 2>&1 || die \
+                "Missing local image required by Compose: $SUPPORT_IMAGE"
+        done <<< "$SUPPORT_IMAGES"
+        unset SUPPORT_IMAGE SUPPORT_IMAGES
+        ;;
+esac
 
-"${DOCKER[@]}" run --rm --entrypoint python "$DOJO_PERMISSION_BASE_IMAGE" -c \
+BASE_IMAGE_ID="$("${DOCKER[@]}" image inspect "$BASE_SOURCE_IMAGE" --format '{{.Id}}')"
+NGINX_IMAGE_ID="$("${DOCKER[@]}" image inspect "$NGINX_SOURCE_IMAGE" --format '{{.Id}}')"
+
+"${DOCKER[@]}" run --pull=never --rm --entrypoint python "$BASE_IMAGE_ID" -c \
     "import dojo, django, sys; assert dojo.__version__ == '$EXPECTED_DD_TAG', dojo.__version__; assert django.get_version() == '$EXPECTED_DJANGO_VERSION', django.get_version(); assert sys.version_info[:2] == ($EXPECTED_PYTHON_MAJOR, $EXPECTED_PYTHON_MINOR), sys.version"
-LOCAL_BASE_IMAGE="dojo-permission/local-defectdojo-base:${EXPECTED_DD_TAG}-${EXPECTED_DD_COMMIT:0:8}"
-"${DOCKER[@]}" image tag "$BASE_SOURCE_IMAGE" "$LOCAL_BASE_IMAGE"
+
+BASE_ID_SUFFIX="${BASE_IMAGE_ID#sha256:}"
+NGINX_ID_SUFFIX="${NGINX_IMAGE_ID#sha256:}"
+LOCAL_BASE_IMAGE="dojo-permission/local-defectdojo-base:${EXPECTED_DD_TAG}-${BASE_ID_SUFFIX:0:12}"
+LOCAL_NGINX_IMAGE="dojo-permission/local-defectdojo-nginx:${EXPECTED_DD_TAG}-${NGINX_ID_SUFFIX:0:12}"
+"${DOCKER[@]}" image tag "$BASE_IMAGE_ID" "$LOCAL_BASE_IMAGE"
+"${DOCKER[@]}" image tag "$NGINX_IMAGE_ID" "$LOCAL_NGINX_IMAGE"
 export DOJO_PERMISSION_BASE_IMAGE="$LOCAL_BASE_IMAGE"
+export DOJO_PERMISSION_NGINX_IMAGE="$LOCAL_NGINX_IMAGE"
+
+if [[ -n "$CA_BUNDLE" ]]; then
+    CA_MOUNT="type=bind,source=$MANAGED_CA_BUNDLE,target=$CA_CONTAINER_PATH,readonly"
+    "${DOCKER[@]}" run --pull=never --rm --mount "$CA_MOUNT" \
+        --entrypoint python "$BASE_IMAGE_ID" -c \
+        "import pathlib, ssl; p = pathlib.Path('$CA_CONTAINER_PATH'); assert p.is_file(); p.open('rb').read(1); ssl.create_default_context(cafile=str(p))"
+    unset CA_MOUNT
+fi
 
 printf '\nVerifying the combined local permission configuration...\n'
 "${PERMISSION_COMPOSE[@]}" config -q
+REQUIRED_SERVICES="$("${PERMISSION_COMPOSE[@]}" config --services)"
+for REQUIRED_SERVICE in nginx uwsgi initializer celeryworker celerybeat postgres valkey; do
+    printf '%s\n' "$REQUIRED_SERVICES" | grep -Fx "$REQUIRED_SERVICE" >/dev/null || die \
+        "Required Compose service is missing: $REQUIRED_SERVICE"
+done
+unset REQUIRED_SERVICE REQUIRED_SERVICES
 
-printf '\nBuilding the permission Django image and matching local nginx image...\n'
-"${PERMISSION_COMPOSE[@]}" build uwsgi nginx
+printf '\nBuilding the thin permission Django image without network access...\n'
+"${PERMISSION_COMPOSE[@]}" build uwsgi
 
-"${DOCKER[@]}" run --rm --entrypoint python "$DOJO_PERMISSION_IMAGE" -c \
+"${DOCKER[@]}" run --pull=never --rm --entrypoint python "$DOJO_PERMISSION_IMAGE" -c \
     "import dojo, django, importlib.metadata as metadata; assert dojo.__version__ == '$EXPECTED_DD_TAG'; assert django.get_version() == '$EXPECTED_DJANGO_VERSION'; assert metadata.version('dojo-permission') == '0.1.0'"
-"${DOCKER[@]}" run --rm --entrypoint python "$DOJO_PERMISSION_IMAGE" -m pip check
+"${DOCKER[@]}" run --pull=never --rm --entrypoint python "$DOJO_PERMISSION_IMAGE" -m pip check
 
 printf '\nStarting the local database and broker...\n'
-if ! "${PERMISSION_COMPOSE[@]}" up -d --no-build postgres valkey; then
+if ! "${PERMISSION_COMPOSE[@]}" up -d --pull never --no-build postgres valkey; then
     "${PERMISSION_COMPOSE[@]}" ps --all >&2 || true
     die "Could not start the local database and broker"
 fi
 
 printf 'Starting and monitoring the DefectDojo initializer...\n'
 INITIALIZER_STARTED_AT=$SECONDS
-if ! "${PERMISSION_COMPOSE[@]}" up -d --no-deps --no-build --force-recreate initializer; then
+if ! "${PERMISSION_COMPOSE[@]}" up -d --pull never --no-deps --no-build \
+    --force-recreate initializer
+then
     "${PERMISSION_COMPOSE[@]}" logs --no-color initializer >&2 || true
     die "Could not start the DefectDojo initializer"
 fi
@@ -381,21 +600,27 @@ while true; do
 done
 
 printf '\nStarting the web and task services...\n'
-if ! "${PERMISSION_COMPOSE[@]}" up -d --no-deps --no-build --force-recreate \
+if ! "${PERMISSION_COMPOSE[@]}" up -d --pull never --no-deps --no-build --force-recreate \
     uwsgi celeryworker celerybeat
 then
     "${PERMISSION_COMPOSE[@]}" logs --no-color --tail 100 \
         uwsgi celeryworker celerybeat >&2 || true
     die "Could not start the DefectDojo web and task services"
 fi
-if ! "${PERMISSION_COMPOSE[@]}" up -d --no-deps --no-build --force-recreate nginx; then
+if ! "${PERMISSION_COMPOSE[@]}" up -d --pull never --no-deps --no-build \
+    --force-recreate nginx
+then
     "${PERMISSION_COMPOSE[@]}" logs --no-color --tail 100 nginx >&2 || true
     die "Could not start the local nginx service"
 fi
 
 printf 'Waiting up to %s seconds for %s...\n' "$HTTP_TIMEOUT" "$HEALTH_URL"
 HTTP_STARTED_AT=$SECONDS
-while ! curl --fail --silent --show-error --max-time 5 -- "$HEALTH_URL" >/dev/null 2>&1; do
+CURL_HEALTH=(curl --fail --silent --show-error --max-time 5)
+if [[ "$HEALTH_URL" == https://* && -n "$CA_BUNDLE" ]]; then
+    CURL_HEALTH+=(--cacert "$MANAGED_CA_BUNDLE")
+fi
+while ! "${CURL_HEALTH[@]}" -- "$HEALTH_URL" >/dev/null 2>&1; do
     if [[ $((SECONDS - HTTP_STARTED_AT)) -ge "$HTTP_TIMEOUT" ]]; then
         "${PERMISSION_COMPOSE[@]}" ps >&2 || true
         "${PERMISSION_COMPOSE[@]}" logs --no-color --tail 100 uwsgi nginx >&2 || true
@@ -403,6 +628,7 @@ while ! curl --fail --silent --show-error --max-time 5 -- "$HEALTH_URL" >/dev/nu
     fi
     sleep 2
 done
+unset CURL_HEALTH
 
 printf '\nRunning application and migration checks...\n'
 "${PERMISSION_COMPOSE[@]}" exec -T uwsgi python manage.py check
@@ -410,6 +636,10 @@ MIGRATIONS="$("${PERMISSION_COMPOSE[@]}" exec -T uwsgi python manage.py showmigr
 printf '%s\n' "$MIGRATIONS"
 printf '%s\n' "$MIGRATIONS" | grep -F '[X] 0001_initial' >/dev/null \
     || die "dojo_permission migration 0001_initial is not applied"
+if [[ -n "$CA_BUNDLE" ]]; then
+    "${PERMISSION_COMPOSE[@]}" exec -T uwsgi python -c \
+        "import os, pathlib, ssl; expected='$CA_CONTAINER_PATH'; assert os.environ.get('REQUESTS_CA_BUNDLE') == expected; assert os.environ.get('SSL_CERT_FILE') == expected; p=pathlib.Path(expected); assert p.is_file(); p.open('rb').read(1); ssl.create_default_context(cafile=str(p))"
+fi
 
 EXPECTED_IMAGE_ID="$("${DOCKER[@]}" image inspect "$DOJO_PERMISSION_IMAGE" --format '{{.Id}}')"
 for SERVICE in uwsgi initializer celeryworker celerybeat; do
@@ -459,21 +689,30 @@ cat <<EOF
 Local staging is ready
 DefectDojo:       $EXPECTED_DD_TAG
 Dojo Permission: 0.1.0
+Image source:     $IMAGE_SOURCE
 URL:              $HEALTH_URL
 Admin username:   admin
-
-Keep using both Compose files and the same project name for this stack. From
-$DEFECTDOJO_DIR, the status command is:
-
-  DD_PORT='$HTTP_PORT' DD_TLS_PORT='$TLS_PORT' \\
-    DOJO_PERMISSION_LIBRARY_ROOT='$LIBRARY_ROOT' \\
-    ${DOCKER[*]} compose --project-name '$PROJECT_NAME' \\
-    --file docker-compose.yml \\
-    --file '$LIBRARY_ROOT/docker/compose.permission.yml' ps
-
-If the first-run password is no longer available, replace "ps" above with:
-
-  exec uwsgi ./manage.py changepassword admin
-
-Do not use this local overlay for an existing customized deployment.
 EOF
+
+COMPOSE_COMMAND_ENV=(
+    "DD_PORT=$HTTP_PORT"
+    "DD_TLS_PORT=$TLS_PORT"
+    "DOJO_PERMISSION_LIBRARY_ROOT=$LIBRARY_ROOT"
+    "DOJO_PERMISSION_BASE_IMAGE=$LOCAL_BASE_IMAGE"
+    "DOJO_PERMISSION_IMAGE=$DOJO_PERMISSION_IMAGE"
+    "DOJO_PERMISSION_NGINX_IMAGE=$LOCAL_NGINX_IMAGE"
+    "DOJO_PERMISSION_RUNTIME_USER=$DOJO_PERMISSION_RUNTIME_USER"
+    "DOJO_PERMISSION_BUILD_NETWORK=$DOJO_PERMISSION_BUILD_NETWORK"
+)
+if [[ -n "$CA_BUNDLE" ]]; then
+    COMPOSE_COMMAND_ENV+=("DOJO_PERMISSION_CA_BUNDLE=$MANAGED_CA_BUNDLE")
+fi
+
+printf '\nKeep the same project name and complete Compose-file list. Status command:\n\n'
+print_shell_command "${COMPOSE_COMMAND_ENV[@]}" "${PERMISSION_COMPOSE[@]}" ps --all
+
+printf '\nIf the first-run password is no longer available, reset it with:\n\n'
+print_shell_command "${COMPOSE_COMMAND_ENV[@]}" "${PERMISSION_COMPOSE[@]}" \
+    exec uwsgi ./manage.py changepassword admin
+
+printf '\nDo not use this local bootstrap against a running shared or production deployment.\n'

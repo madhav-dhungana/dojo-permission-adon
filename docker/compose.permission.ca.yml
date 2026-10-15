@@ -1,0 +1,37 @@
+# LOCAL STAGING ONLY.
+# DOJO_PERMISSION_CA_BUNDLE points to a bootstrap-managed, ignored copy of a
+# public CA bundle. The file is mounted at a stable path for Python TLS clients.
+x-dojo-permission-ca-environment: &dojo-permission-ca-environment
+  REQUESTS_CA_BUNDLE: /etc/ssl/certs/dojo-permission-ca-bundle.pem
+  SSL_CERT_FILE: /etc/ssl/certs/dojo-permission-ca-bundle.pem
+
+x-dojo-permission-ca-volume: &dojo-permission-ca-volume
+  type: bind
+  source: ${DOJO_PERMISSION_CA_BUNDLE:?Set DOJO_PERMISSION_CA_BUNDLE}
+  target: /etc/ssl/certs/dojo-permission-ca-bundle.pem
+  read_only: true
+
+services:
+  uwsgi:
+    environment:
+      <<: *dojo-permission-ca-environment
+    volumes:
+      - *dojo-permission-ca-volume
+
+  initializer:
+    environment:
+      <<: *dojo-permission-ca-environment
+    volumes:
+      - *dojo-permission-ca-volume
+
+  celeryworker:
+    environment:
+      <<: *dojo-permission-ca-environment
+    volumes:
+      - *dojo-permission-ca-volume
+
+  celerybeat:
+    environment:
+      <<: *dojo-permission-ca-environment
+    volumes:
+      - *dojo-permission-ca-volume

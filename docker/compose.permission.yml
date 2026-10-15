@@ -18,9 +18,10 @@ services:
         mode: host
 
   uwsgi:
-    build:
+    build: !override
       context: ${DOJO_PERMISSION_LIBRARY_ROOT:-../dojo-permission-library}
       dockerfile: docker/Dockerfile
+      network: ${DOJO_PERMISSION_BUILD_NETWORK:-default}
       args:
         BASE_IMAGE: ${DOJO_PERMISSION_BASE_IMAGE:-defectdojo/defectdojo-django:2.58.3}
         RUNTIME_USER: ${DOJO_PERMISSION_RUNTIME_USER:-1001}

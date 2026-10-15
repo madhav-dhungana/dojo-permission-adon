@@ -50,12 +50,48 @@ applies migrations, and waits for the login page. The default URL is
 the initializer output on the first run. Both published ports bind only to
 `127.0.0.1`.
 
+The same bootstrap also supports an existing DefectDojo checkout with local
+Compose edits. Choose whether it must reuse already-pulled images or pull the
+exact 2.58.3 images:
+
+```bash
+CORPORATE_CA="/absolute/path/to/rak-ca-bundle.pem"
+DEFECTDOJO_DIR="/absolute/path/to/defectdojo-2.58.3"
+
+# No registry pulls; required DD, PostgreSQL, and Valkey images are local:
+bash deploy/bootstrap-local-docker.sh \
+  --existing-defectdojo-dir "$DEFECTDOJO_DIR" \
+  --image-source local \
+  --ca-bundle "$CORPORATE_CA"
+
+# Or explicitly pull the required release images:
+bash deploy/bootstrap-local-docker.sh \
+  --existing-defectdojo-dir "$DEFECTDOJO_DIR" \
+  --image-source pull \
+  --ca-bundle "$CORPORATE_CA"
+```
+
+Existing-checkout mode permits a dirty or non-Git source tree but still
+verifies the actual runtime image as DefectDojo 2.58.3, Django 5.2.14, and
+Python 3.13. It applies Compose changes but does not build DefectDojo
+application-source edits from the checkout. A repeatable `--compose-file FILE`
+option adds office-specific Compose overrides without modifying the checkout.
+`--ca-bundle FILE` mounts a per-developer combined corporate/public CA bundle
+into the Python services; it does not configure Docker daemon trust for image
+pulls.
+
+See the
+[local Docker bootstrap guide](https://github.com/madhav-dhungana/dojo-permission-adon/blob/main/docs/LOCAL_BOOTSTRAP.md)
+for copy/paste commands, Compose ordering, certificate trust boundaries, and
+troubleshooting.
+
 A successful run ends with:
 
 ```text
 Local staging is ready
 DefectDojo:       2.58.3
 Dojo Permission: 0.1.0
+Image source:     build
 URL:              http://127.0.0.1:18080/login
 Admin username:   admin
 ```
@@ -71,28 +107,10 @@ The bootstrap is safe to rerun with the same checkout and Compose project. It
 may recreate its service containers, but it does not reset a checkout, run
 `compose down`, or delete persistent volumes or application data.
 
-For normal lifecycle commands, start in the library checkout:
-
-```bash
-DOJO_PERMISSION_LIBRARY_ROOT="$(pwd -P)"
-cd ../defectdojo-2.58.3
-export DOJO_PERMISSION_LIBRARY_ROOT DD_PORT=18080 DD_TLS_PORT=18443
-
-LOCAL=(
-  docker compose
-  --env-file /dev/null
-  --project-name dojo-permission-dev
-  --file docker-compose.yml
-  --file "$DOJO_PERMISSION_LIBRARY_ROOT/docker/compose.permission.yml"
-)
-
-"${LOCAL[@]}" ps --all
-"${LOCAL[@]}" logs --tail 100
-"${LOCAL[@]}" stop nginx celerybeat celeryworker uwsgi valkey postgres
-"${LOCAL[@]}" start postgres valkey
-"${LOCAL[@]}" start uwsgi celeryworker celerybeat
-"${LOCAL[@]}" start nginx
-```
+After a successful run, the script prints the exact status and admin-password
+reset commands with every required environment value and Compose file. Use
+those printed commands for that stack; they include image-specific helper
+tags, optional office overrides, and the optional CA overlay.
 
 Run the bootstrap again to rebuild or recreate missing containers. Never add
 `--volumes` to a removal command unless deleting the local database and uploads
@@ -127,9 +145,9 @@ The
 includes prerequisites, complete commands for both approaches, validation,
 configuration, and rollback.
 
-`docker/compose.permission.yml` is only for this project's clean local staging
-stack. Never apply it to an existing deployment because it supplies local nginx
-and settings mounts.
+The `docker/compose.permission*.yml` files are only for bootstrap-created local
+staging stacks. Never apply them to an existing deployment because they control
+local images and settings mounts.
 
 ## Development
 

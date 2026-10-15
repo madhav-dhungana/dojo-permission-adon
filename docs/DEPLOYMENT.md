@@ -653,6 +653,12 @@ while the library was installed. Review those separately.
 
 ## Local staging override
 
-`docker/compose.permission.yml` is only for this repository's clean local
-staging stack. Never apply it to an existing deployment: it supplies a local
-nginx image and replaces the entire sample extra-settings mount.
+The `docker/compose.permission*.yml` files are only for bootstrap-created local
+staging stacks. Never apply them to an existing deployment: they control the
+local Django/nginx images and replace the entire sample extra-settings mount.
+
+To create a separate local staging stack from pinned source or from an
+existing downloaded DefectDojo checkout, follow the
+[local Docker bootstrap guide](LOCAL_BOOTSTRAP.md). Its existing-checkout mode
+is still a new local stack; it is not a shortcut for changing the running
+deployment covered by this guide.
