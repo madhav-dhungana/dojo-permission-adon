@@ -34,20 +34,32 @@ choices.
 
 ### Without Signing Certificate
 
-Choose one installation directory, clone the library, then run the one-shot
-installer. It downloads the pinned DefectDojo source beside the library.
+From the directory where you want to keep the installation, clone the library
+and run the bootstrap script. It downloads DefectDojo beside the library before
+building and starting the stack.
 
 ```bash
-INSTALL_ROOT="$HOME/dojo-permission"
-mkdir -p "$INSTALL_ROOT"
-cd "$INSTALL_ROOT"
+mkdir -p dojo-permission
+cd dojo-permission
 
 git clone \
   https://github.com/madhav-dhungana/dojo-permission-adon.git
 
-cd "$INSTALL_ROOT/dojo-permission-adon"
+cd dojo-permission-adon
+bash deploy/bootstrap-local-docker.sh
+```
+
+If a later build or startup step fails, the completed
+`../defectdojo-2.58.3` checkout stays on disk. Edit its `docker-compose.yml` as
+needed, then run this from the library directory to continue with that file:
+
+```bash
 bash deploy/install-local.sh
 ```
+
+This resume command uses the downloaded Compose configuration and prebuilt
+DefectDojo 2.58.3 images. It accepts your local Compose edits without requiring
+a clean checkout.
 
 ### With Signing Certificate
 
@@ -85,21 +97,28 @@ signing-certificate variable you add or reference in `docker-compose.yml` in
 the same shell before running the installer, or use literal values in the
 Compose file.
 
-Without Signing Certificate builds the pinned DefectDojo source. With Signing
-Certificate reads the sibling `defectdojo-2.58.3/docker-compose.yml` and pulls
-the required release images. Both choices build the permission-enabled Django
-image, start the complete stack, apply migrations, and validate the result.
-Compose edits in the signing-certificate choice are retained. The installer
+The Without Signing Certificate bootstrap builds the pinned DefectDojo source.
+`install-local.sh` reuses an existing sibling
+`defectdojo-2.58.3/docker-compose.yml` and pulls the required release images,
+including when you continue after a failed bootstrap. Changes to DefectDojo
+Python source files are not built in this resume mode. Both scripts build the
+permission-enabled Django image, start the complete stack, apply migrations,
+and validate the result. Your Compose edits are retained. The installer
 does not reset the DefectDojo checkout, run `compose down`, or delete volumes.
 Direct `docker compose up` is not a replacement for the first installation
 because it does not perform the library build, migrations, and validation.
-The path-specific Compose project prevents ownership/name collisions, but an
-old running stack can still occupy ports `18080` and `18443`. Stop that known
-stack from its original checkout, or choose free ports for this run:
+Both scripts select the same Compose project. An owned stack recorded for
+these exact checkout paths keeps its project name; otherwise a path-specific
+name avoids collisions with unrelated resources. An old running stack can
+still occupy ports `18080` and `18443`. Stop that known stack from its original
+checkout, or choose free ports for this run:
 
 ```bash
-DD_PORT=18081 DD_TLS_PORT=18444 bash deploy/install-local.sh
+DD_PORT=18081 DD_TLS_PORT=18444 bash deploy/bootstrap-local-docker.sh
 ```
+
+Use the same port variables with `install-local.sh` when continuing an existing
+installation.
 
 See the
 [local installation guide](https://github.com/madhav-dhungana/dojo-permission-adon/blob/main/docs/LOCAL_BOOTSTRAP.md)
@@ -122,7 +141,9 @@ To preview the resolved paths and command without changing Docker state, run:
 bash deploy/install-local.sh --dry-run
 ```
 
-Use `bash deploy/install-local.sh --help` to display the two choices.
+Use `bash deploy/install-local.sh --help` for resume and signing-certificate
+options. With no downloaded DefectDojo checkout, the no-flag installer starts
+the bootstrap automatically.
 
 The installer is safe to rerun with the same checkout and Compose project. It
 may recreate its service containers, but it does not reset a checkout, run

@@ -11,6 +11,8 @@ LIBRARY_ROOT="$(cd "$SCRIPT_DIR/.." && pwd -P)"
 LIBRARY_PARENT="$(dirname "$LIBRARY_ROOT")"
 BOOTSTRAP="$SCRIPT_DIR/bootstrap-local-docker.sh"
 
+source "$SCRIPT_DIR/local-stack-common.sh"
+
 MODE="without"
 MODE_WAS_SET="false"
 DEFECTDOJO_DIR="${DOJO_PERMISSION_DEFECTDOJO_DIR:-$LIBRARY_PARENT/defectdojo-2.58.3}"
@@ -25,8 +27,9 @@ Usage:
 
 Modes:
   --without-signing-certificate
-      Without Signing Certificate (default). If the sibling
-      defectdojo-2.58.3 checkout does not exist, it is downloaded and built.
+      Without Signing Certificate (default). Reuses a downloaded sibling
+      defectdojo-2.58.3 checkout, including docker-compose.yml edits.
+      If the checkout is missing, runs the original source bootstrap.
 
   --with-signing-certificate
       With Signing Certificate. Reuses an already downloaded sibling
@@ -38,10 +41,13 @@ Options:
   -h, --help            Show this help.
 
 Common commands:
-  bash deploy/install-local.sh
+  bash deploy/bootstrap-local-docker.sh
+  bash deploy/install-local.sh              # Resume a downloaded checkout.
   bash deploy/install-local.sh --with-signing-certificate
 
-The generated Compose project name is stable for this pair of checkout paths.
+Both scripts use the same project name for this pair of checkout paths.
+An existing checkout uses the release images; application source edits are
+not built. Docker must trust any signing certificate before pulling images.
 The installer may recreate this stack's service containers. It never runs
 Compose down or deletes volumes, networks, checkouts, or application data.
 EOF
@@ -59,43 +65,6 @@ select_mode() {
     fi
     MODE="$requested_mode"
     MODE_WAS_SET="true"
-}
-
-absolute_path() {
-    local supplied_path="$1"
-    local parent_path
-    local base_name
-
-    case "$supplied_path" in
-        /*) ;;
-        *) supplied_path="$(pwd -P)/$supplied_path" ;;
-    esac
-
-    if [[ -d "$supplied_path" ]]; then
-        (cd "$supplied_path" && pwd -P)
-        return
-    fi
-
-    parent_path="$(dirname "$supplied_path")"
-    base_name="$(basename "$supplied_path")"
-    [[ -d "$parent_path" ]] || die "Parent directory does not exist: $parent_path"
-    parent_path="$(cd "$parent_path" && pwd -P)"
-    printf '%s/%s\n' "$parent_path" "$base_name"
-}
-
-path_fingerprint() {
-    local input="$1"
-    local digest
-
-    if command -v shasum >/dev/null 2>&1; then
-        digest="$(printf '%s' "$input" | shasum -a 256)"
-    elif command -v sha256sum >/dev/null 2>&1; then
-        digest="$(printf '%s' "$input" | sha256sum)"
-    else
-        digest="$(printf '%s' "$input" | cksum)"
-    fi
-    digest="${digest%% *}"
-    printf '%s\n' "${digest:0:12}"
 }
 
 print_shell_command() {
@@ -130,7 +99,7 @@ done
 
 [[ -x "$BOOTSTRAP" ]] || die "Bootstrap script is missing or not executable: $BOOTSTRAP"
 
-DEFECTDOJO_DIR="$(absolute_path "$DEFECTDOJO_DIR")"
+DEFECTDOJO_DIR="$(local_checkout_path "$DEFECTDOJO_DIR")"
 DEFECTDOJO_EXISTS="false"
 if [[ -e "$DEFECTDOJO_DIR" ]]; then
     [[ -d "$DEFECTDOJO_DIR" ]] || die "DefectDojo path is not a directory: $DEFECTDOJO_DIR"
@@ -143,15 +112,14 @@ if [[ "$MODE" == with && "$DEFECTDOJO_EXISTS" != true ]]; then
     die "With Signing Certificate requires the sibling DefectDojo checkout at $DEFECTDOJO_DIR. Download DefectDojo 2.58.3 there, update docker-compose.yml with the signing-certificate settings, and rerun this command."
 fi
 
-PATH_ID="$(path_fingerprint "$LIBRARY_ROOT|$DEFECTDOJO_DIR")"
-PROJECT_NAME="dojo-permission-local-$PATH_ID"
+PROJECT_NAME="${DOJO_PERMISSION_PROJECT_NAME:-$(local_default_project_name "$LIBRARY_ROOT" "$DEFECTDOJO_DIR")}"
 
 INSTALL_COMMAND=(
     "$BOOTSTRAP"
     --project-name "$PROJECT_NAME"
 )
 
-if [[ "$MODE" == with ]]; then
+if [[ "$DEFECTDOJO_EXISTS" == true ]]; then
     INSTALL_COMMAND+=(
         --existing-defectdojo-dir "$DEFECTDOJO_DIR"
         --image-source pull

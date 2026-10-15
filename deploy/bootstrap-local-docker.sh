@@ -17,8 +17,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 LIBRARY_ROOT="$(cd "$SCRIPT_DIR/.." && pwd -P)"
 LIBRARY_PARENT="$(dirname "$LIBRARY_ROOT")"
 
+source "$SCRIPT_DIR/local-stack-common.sh"
+
 DEFECTDOJO_DIR="${DEFECTDOJO_DIR:-$LIBRARY_PARENT/defectdojo-2.58.3}"
-PROJECT_NAME="${DOJO_PERMISSION_PROJECT_NAME:-dojo-permission-dev}"
+PROJECT_NAME="${DOJO_PERMISSION_PROJECT_NAME:-}"
+PROJECT_NAME_WAS_SET="false"
+if [[ -n "$PROJECT_NAME" ]]; then
+    PROJECT_NAME_WAS_SET="true"
+fi
 HTTP_PORT="${DD_PORT:-18080}"
 TLS_PORT="${DD_TLS_PORT:-18443}"
 INITIALIZER_TIMEOUT="${DOJO_PERMISSION_INITIALIZER_TIMEOUT:-900}"
@@ -70,7 +76,8 @@ Options:
                         May be supplied more than once; order is preserved.
   --ca-bundle FILE      Host CA bundle to mount read-only in Python services.
                         Also used by Git if strict mode must clone DefectDojo.
-  --project-name NAME   Docker Compose project (default: dojo-permission-dev).
+  --project-name NAME   Docker Compose project (default: stable name based on
+                        the library and DefectDojo checkout paths).
   --port PORT           Local HTTP port (default: 18080).
   --tls-port PORT       Local HTTPS port (default: 18443).
   --health-url URL      URL used for the final HTTP check. By default this is
@@ -161,6 +168,7 @@ while [[ $# -gt 0 ]]; do
         --project-name)
             [[ $# -ge 2 ]] || die "--project-name requires a value"
             PROJECT_NAME="$2"
+            PROJECT_NAME_WAS_SET="true"
             shift 2
             ;;
         --port)
@@ -217,7 +225,6 @@ is_port "$TLS_PORT" || die "Invalid HTTPS port: $TLS_PORT"
 [[ "$HTTP_PORT" != "$TLS_PORT" ]] || die "HTTP and HTTPS ports must differ"
 is_positive_integer "$INITIALIZER_TIMEOUT" || die "Invalid initializer timeout: $INITIALIZER_TIMEOUT"
 is_positive_integer "$HTTP_TIMEOUT" || die "Invalid HTTP timeout: $HTTP_TIMEOUT"
-[[ "$PROJECT_NAME" =~ ^[a-z0-9][a-z0-9_.-]*$ ]] || die "Invalid Compose project name: $PROJECT_NAME"
 if [[ -z "$HEALTH_URL" ]]; then
     HEALTH_URL="http://127.0.0.1:$HTTP_PORT/login"
 fi
@@ -225,10 +232,11 @@ fi
     "The health URL must use http:// or https://"
 [[ "$HEALTH_URL" != *[[:space:]]* ]] || die "The health URL must not contain whitespace"
 
-case "$DEFECTDOJO_DIR" in
-    /*) ;;
-    *) DEFECTDOJO_DIR="$(pwd -P)/$DEFECTDOJO_DIR" ;;
-esac
+DEFECTDOJO_DIR="$(local_checkout_path "$DEFECTDOJO_DIR")"
+if [[ "$PROJECT_NAME_WAS_SET" != true ]]; then
+    PROJECT_NAME="$(local_default_project_name "$LIBRARY_ROOT" "$DEFECTDOJO_DIR")"
+fi
+[[ "$PROJECT_NAME" =~ ^[a-z0-9][a-z0-9_.-]*$ ]] || die "Invalid Compose project name: $PROJECT_NAME"
 
 if [[ -n "$CA_BUNDLE" ]]; then
     case "$CA_BUNDLE" in
