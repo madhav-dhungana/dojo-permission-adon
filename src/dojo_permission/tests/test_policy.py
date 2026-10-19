@@ -182,6 +182,7 @@ class ManagedPolicyTests(TestCase):
     def test_invitation_page_does_not_list_existing_accounts(self):
         response = self.client.get(reverse("dojo_permission:manage_policy_members", args=(self.policy.pk,)))
         self.assertEqual(response.status_code, 200)
+        self.assertContains(response, '<button class="btn btn-success" type="submit">')
         for text in ("Add an existing account", "existing-user", self.foreign.username, self.foreign.email):
             self.assertNotContains(response, text)
 

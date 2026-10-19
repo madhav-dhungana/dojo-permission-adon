@@ -24,7 +24,7 @@
             {% csrf_token %}
             <input type="hidden" name="action" value="invite_new">
             {% include "dojo/form_fields.html" with form=invitation_form %}
-            <button class="btn btn-primary" type="submit">
+            <button class="btn btn-success" type="submit">
               {% trans "Create restricted account" %}
             </button>
           </form>
