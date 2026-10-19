@@ -1,514 +1,400 @@
+"""Managed policy, multi-product isolation, and real native UI/API regressions."""
+from datetime import date
+import re
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
-from django.core.exceptions import PermissionDenied
-from django.http import HttpResponse
-from django.test import RequestFactory, TestCase
+from django.contrib.auth.models import Permission
+from django.contrib.auth.tokens import default_token_generator
+from django.core import mail
+from django.core.exceptions import PermissionDenied, ValidationError
+from django.core.management import call_command
+from django.db import connection
+from django.test import TestCase, override_settings
 from django.urls import reverse
+from django.utils import timezone
+from django.utils.encoding import force_bytes
+from django.utils.http import urlsafe_base64_encode
 
 from dojo.authorization.authorization import user_has_permission
 from dojo.authorization.roles_permissions import Permissions, Roles
 from dojo.models import (
-    Dojo_Group,
-    Dojo_Group_Member,
-    Global_Role,
-    Product,
-    Product_Group,
-    Product_Member,
-    Product_Type,
-    Product_Type_Group,
-    Role,
-    SLA_Configuration,
+    Dojo_Group, Dojo_Group_Member, Engagement, Finding, Global_Role, Product,
+    Product_Group, Product_Member, Product_Type, Product_Type_Group, Role,
+    SLA_Configuration, System_Settings, Test, Test_Type,
+)
+from dojo_permission.models import RestrictedGroupPolicy
+from dojo_permission.policy import policy_denies_permission
+from dojo_permission.services import add_existing_user_to_policy, create_invited_user, send_password_invitation, requester_policy_membership, InvitationEmailError
+
+User = get_user_model()
+DENIED = (
+    Permissions.Engagement_Add, Permissions.Engagement_Edit, Permissions.Engagement_Delete,
+    Permissions.Test_Add, Permissions.Import_Scan_Result, Permissions.Finding_Add,
+    Permissions.Finding_Delete, Permissions.Product_Delete, Permissions.Product_Group_Add,
+    Permissions.Product_Group_Edit, Permissions.Product_Group_Delete,
 )
 
-from dojo_permission.models import RestrictedGroupPolicy
-from dojo_permission.forms import RestrictedDojoGroupForm
-from dojo_permission.middleware import RestrictedActionMiddleware
-from dojo_permission.policy import policy_denies_permission
-from dojo_permission.services import add_existing_user_to_policy, create_invited_user
 
-
-class RestrictedPolicyTests(TestCase):
+class ManagedPolicyTests(TestCase):
     def setUp(self):
-        self.writer = Role.objects.get(pk=Roles.Writer)
         self.reader = Role.objects.get(pk=Roles.Reader)
+        self.writer = Role.objects.get(pk=Roles.Writer)
         self.maintainer = Role.objects.get(pk=Roles.Maintainer)
         self.owner = Role.objects.get(pk=Roles.Owner)
-        self.product_type = Product_Type.objects.create(name="Permission test type")
-        sla = SLA_Configuration.objects.first()
-        self.product = Product.objects.create(
-            name="Permission test product",
-            description="Policy test",
-            prod_type=self.product_type,
-            sla_configuration=sla,
-        )
-        self.group = Dojo_Group.objects.create(name="Restricted test group")
-        self.policy = RestrictedGroupPolicy.objects.create(group=self.group)
-        self.user = get_user_model().objects.create_user(
-            username="restricted-writer",
-            email="restricted@example.test",
-        )
-        Dojo_Group_Member.objects.create(
-            group=self.group,
-            user=self.user,
-            role=self.writer,
-        )
-        Product_Group.objects.create(
-            product=self.product,
-            group=self.group,
-            role=self.writer,
-        )
-
-    def test_restricted_writer_can_only_update_existing_findings(self):
-        self.assertTrue(user_has_permission(self.user, self.product, Permissions.Finding_Edit))
-        denied_permissions = (
-            Permissions.Engagement_Add,
-            Permissions.Engagement_Delete,
-            Permissions.Test_Add,
-            Permissions.Import_Scan_Result,
-            Permissions.Finding_Add,
-            Permissions.Finding_Delete,
-        )
-        for permission in denied_permissions:
-            with self.subTest(permission=permission):
-                self.assertFalse(user_has_permission(self.user, self.product, permission))
-
-    def test_global_writer_does_not_bypass_restricted_policy(self):
-        Global_Role.objects.update_or_create(
-            user=self.user,
-            defaults={"role": self.writer},
-        )
-
-        self.assertTrue(user_has_permission(self.user, self.product, Permissions.Finding_Edit))
-        self.assertFalse(user_has_permission(self.user, self.product, Permissions.Engagement_Add))
-        self.assertFalse(user_has_permission(self.user, self.product, Permissions.Test_Add))
-        self.assertFalse(user_has_permission(self.user, self.product, Permissions.Import_Scan_Result))
-        self.assertFalse(user_has_permission(self.user, self.product, Permissions.Finding_Add))
-
-    def test_maintainer_membership_inside_restricted_group_does_not_bypass_policy(self):
-        membership = Dojo_Group_Member.objects.get(group=self.group, user=self.user)
-        membership.role = self.maintainer
-        membership.save(update_fields=("role",))
-
-        self.assertTrue(user_has_permission(self.user, self.product, Permissions.Finding_Edit))
-        self.assertFalse(user_has_permission(self.user, self.product, Permissions.Engagement_Add))
-        self.assertFalse(user_has_permission(self.user, self.product, Permissions.Test_Add))
-        self.assertFalse(user_has_permission(self.user, self.product, Permissions.Import_Scan_Result))
-        self.assertFalse(user_has_permission(self.user, self.product, Permissions.Finding_Add))
-        self.assertFalse(user_has_permission(self.user, self.product, Permissions.Finding_Delete))
-
-    def test_reader_membership_activates_restricted_policy(self):
-        membership = Dojo_Group_Member.objects.get(group=self.group, user=self.user)
-        membership.role = self.reader
-        membership.save(update_fields=("role",))
-
-        self.assertTrue(user_has_permission(self.user, self.product, Permissions.Finding_Edit))
-        self.assertTrue(
-            policy_denies_permission(self.user, self.product, Permissions.Finding_Delete),
-        )
-
-    def test_product_type_group_assignment_activates_policy(self):
-        Product_Group.objects.filter(product=self.product, group=self.group).delete()
-        Product_Type_Group.objects.create(
-            product_type=self.product_type,
-            group=self.group,
-            role=self.writer,
-        )
-
-        self.assertTrue(user_has_permission(self.user, self.product, Permissions.Finding_Edit))
-        self.assertFalse(user_has_permission(self.user, self.product, Permissions.Finding_Add))
-
-    def test_inactive_policy_does_not_restrict_permissions(self):
-        self.policy.is_active = False
-        self.policy.save(update_fields=("is_active", "updated_at"))
-
-        self.assertFalse(
-            policy_denies_permission(
-                self.user,
-                self.product,
-                Permissions.Finding_Delete,
-            ),
-        )
-
-    def test_owner_membership_inside_restricted_group_bypasses_policy(self):
-        membership = Dojo_Group_Member.objects.get(group=self.group, user=self.user)
-        membership.role = self.owner
-        membership.save(update_fields=("role",))
-
-        for permission in (
-            Permissions.Engagement_Add,
-            Permissions.Engagement_Delete,
-            Permissions.Test_Add,
-            Permissions.Import_Scan_Result,
-            Permissions.Finding_Add,
-            Permissions.Finding_Delete,
-        ):
-            with self.subTest(permission=permission):
-                self.assertFalse(policy_denies_permission(self.user, self.product, permission))
-
-        # The overlay is removed for this user; DefectDojo's underlying
-        # product-group Writer role still determines which actions are allowed.
-        self.assertTrue(user_has_permission(self.user, self.product, Permissions.Engagement_Add))
-        self.assertTrue(user_has_permission(self.user, self.product, Permissions.Finding_Add))
-
-    def test_owner_membership_bypasses_duplicate_restricted_membership(self):
-        Dojo_Group_Member.objects.create(
-            group=self.group,
-            user=self.user,
-            role=self.owner,
-        )
-
-        self.assertFalse(
-            policy_denies_permission(
-                self.user,
-                self.product,
-                Permissions.Finding_Delete,
-            ),
-        )
-
-    def test_superuser_bypasses_policy_and_keeps_user_group_administration(self):
-        superuser = get_user_model().objects.create_superuser(
-            username="permission-superuser",
-            email="superuser@example.test",
-        )
-        Dojo_Group_Member.objects.create(
-            group=self.group,
-            user=superuser,
-            role=self.maintainer,
-        )
-
-        for permission in (
-            Permissions.Engagement_Add,
-            Permissions.Engagement_Delete,
-            Permissions.Test_Add,
-            Permissions.Import_Scan_Result,
-            Permissions.Finding_Add,
-            Permissions.Finding_Delete,
-        ):
-            with self.subTest(permission=permission):
-                self.assertFalse(policy_denies_permission(superuser, self.product, permission))
-                self.assertTrue(user_has_permission(superuser, self.product, permission))
-        self.assertTrue(user_has_permission(superuser, self.group, Permissions.Group_Edit))
-        self.assertTrue(user_has_permission(superuser, self.group, Permissions.Group_Manage_Members))
-        self.assertTrue(superuser.has_perm("auth.change_user"))
-
-    def test_superuser_can_open_group_and_user_edit_pages_with_checkbox(self):
-        superuser = get_user_model().objects.create_superuser(
-            username="ui-superuser",
-            email="ui-superuser@example.test",
-        )
-        self.client.force_login(superuser)
-
-        group_response = self.client.get(reverse("edit_group", args=(self.group.id,)))
-        self.assertEqual(group_response.status_code, 200)
-        self.assertContains(
-            group_response,
-            "Do you want to apply delete/edit restrictions to this group?",
-        )
-        self.assertFalse(
-            group_response.context["form"].fields["apply_restrictions"].disabled,
-        )
-        self.assertEqual(
-            tuple(group_response.context["form"].fields),
-            ("name", "description", "apply_restrictions"),
-        )
-
-        user_response = self.client.get(reverse("edit_user", args=(self.user.id,)))
-        self.assertEqual(user_response.status_code, 200)
-
-    def test_group_overlay_preserves_defectdojo_group_pages(self):
-        from dojo.group import views as group_views
-
-        RestrictedActionMiddleware(lambda request: HttpResponse())
-
-        self.assertEqual(group_views.ListGroups().get_template(), "dojo/groups.html")
-        self.assertEqual(group_views.ViewGroup().get_template(), "dojo/view_group.html")
-        self.assertEqual(group_views.AddGroup().get_template(), "dojo/add_group.html")
-        self.assertEqual(group_views.EditGroup().get_template(), "dojo/add_group.html")
-
-    def test_restricted_member_can_open_limited_add_or_invite_page_directly(self):
+        self.a = Product.objects.create(name="Product A", description="A", prod_type=Product_Type.objects.create(name="Type A"), sla_configuration=SLA_Configuration.objects.first())
+        self.b = Product.objects.create(name="Product B", description="B", prod_type=Product_Type.objects.create(name="Type B"), sla_configuration=SLA_Configuration.objects.first())
+        self.policy = RestrictedGroupPolicy.objects.get(product=self.a)
+        self.other_policy = RestrictedGroupPolicy.objects.get(product=self.b)
+        self.user = User.objects.create_user(username="member-a", email="member-a@example.test")
+        self.foreign = User.objects.create_user(username="private-member-b", email="private-b@example.test")
+        self.membership = Dojo_Group_Member.objects.create(group=self.policy.group, user=self.user, role=self.reader)
+        Dojo_Group_Member.objects.create(group=self.other_policy.group, user=self.foreign, role=self.reader)
+        self.engagement = Engagement.objects.create(name="Existing engagement", product=self.a, target_start=date.today(), target_end=date.today())
+        self.test = Test.objects.create(engagement=self.engagement, test_type=Test_Type.objects.first(), target_start=timezone.now(), target_end=timezone.now())
+        self.finding = Finding.objects.create(title="Existing finding", test=self.test, severity="Low", reporter=self.user, verified=True)
         self.client.force_login(self.user)
 
-        response = self.client.get(reverse(
-            "dojo_permission:manage_policy_members",
-            args=(self.policy.id,),
-        ))
+    def invite(self, **kwargs):
+        values = dict(requester=self.user, policy=self.policy, username="invited-new", email="invited-new@example.test")
+        values.update(kwargs)
+        return create_invited_user(**values)
 
-        self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "Add an existing account")
-        self.assertContains(response, "Create or invite an account")
+    def test_product_signal_provisions_one_scoped_group(self):
+        self.assertTrue(self.policy.is_active)
+        assignment = Product_Group.objects.get(group=self.policy.group)
+        self.assertEqual((assignment.product_id, assignment.role_id), (self.a.pk, Roles.Writer))
+        self.assertNotEqual(self.policy.group_id, self.other_policy.group_id)
+        self.assertFalse(Global_Role.objects.filter(group=self.policy.group, role__isnull=False).exists())
+        self.assertFalse(self.policy.group.auth_group.permissions.exists())
 
-    def test_restricted_member_group_link_opens_limited_member_page(self):
-        self.client.force_login(self.user)
+    def test_post_migrate_provisioning_is_idempotent(self):
+        before = (RestrictedGroupPolicy.objects.count(), Dojo_Group.objects.count(), Product_Group.objects.count())
+        call_command("migrate", "dojo_permission", interactive=False, verbosity=0)
+        self.assertEqual(before, (RestrictedGroupPolicy.objects.count(), Dojo_Group.objects.count(), Product_Group.objects.count()))
 
-        response = self.client.get(reverse("view_group", args=(self.group.id,)))
+    def test_admin_rename_does_not_duplicate_owned_groups(self):
+        from dojo_permission.provisioning import ensure_default_managed_group, ensure_product_policy
+        marker = ensure_default_managed_group()
+        marker.group.name = "Administrator renamed marker"
+        marker.group.description = "Administrator description"
+        marker.group.save()
+        self.policy.group.name = "Administrator renamed product group"
+        self.policy.group.save()
+        self.assertEqual(ensure_default_managed_group().pk, marker.pk)
+        self.assertEqual(ensure_product_policy(self.a).pk, self.policy.pk)
 
-        self.assertRedirects(
-            response,
-            reverse("dojo_permission:manage_policy_members", args=(self.policy.id,)),
-        )
+    def test_owned_name_collision_does_not_adopt_unrelated_group(self):
+        from dojo_permission.provisioning import ensure_product_policy, managed_product_group_name, ManagedGroupCollision
+        self.policy.group.delete()
+        collision = Dojo_Group.objects.create(name=managed_product_group_name(self.a), description="An unrelated pre-existing group")
+        with self.assertRaises(ManagedGroupCollision):
+            ensure_product_policy(self.a)
+        self.assertFalse(RestrictedGroupPolicy.objects.filter(group=collision).exists())
 
-    def test_restricted_member_can_add_existing_account_through_limited_page(self):
-        target = get_user_model().objects.create_user(
-            username="existing-page-user",
-            email="existing-page-user@example.test",
-        )
-        self.client.force_login(self.user)
+    def test_provisioning_collision_does_not_leave_a_half_created_product(self):
+        from dojo_permission.provisioning import ManagedGroupCollision
+        Dojo_Group.objects.create(name="Reserved collision", description="Unrelated group")
+        with patch("dojo_permission.provisioning.managed_product_group_name", return_value="Reserved collision"):
+            with self.assertRaises(ManagedGroupCollision):
+                Product.objects.create(name="Must not remain after collision", description="Test", prod_type=self.a.prod_type)
+        self.assertFalse(Product.objects.filter(name="Must not remain after collision").exists())
 
-        response = self.client.post(
-            reverse("dojo_permission:manage_policy_members", args=(self.policy.id,)),
-            {
-                "action": "add_existing",
-                "existing-user": target.id,
-            },
-        )
+    def test_new_product_does_not_auto_make_requester_policy_owner(self):
+        from crum import impersonate
+        with impersonate(self.user):
+            product = Product.objects.create(name="Created under request", description="Test", prod_type=self.a.prod_type)
+        policy = RestrictedGroupPolicy.objects.get(product=product)
+        self.assertFalse(Dojo_Group_Member.objects.filter(group=policy.group, user=self.user, role=self.owner).exists())
 
-        self.assertRedirects(
-            response,
-            reverse("dojo_permission:manage_policy_members", args=(self.policy.id,)),
-        )
-        membership = Dojo_Group_Member.objects.get(group=self.group, user=target)
-        self.assertEqual(membership.role_id, self.writer.id)
+    def test_product_fk_remains_compatible_with_old_image_deletion(self):
+        if connection.vendor != "postgresql":
+            self.skipTest("PostgreSQL deployment constraint")
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT confdeltype FROM pg_constraint WHERE conrelid = %s::regclass AND confrelid = %s::regclass", [RestrictedGroupPolicy._meta.db_table, Product._meta.db_table])
+            actions = [row[0] for row in cursor.fetchall()]
+        self.assertEqual(actions, ["c"])
 
-    def test_restricted_member_can_create_sso_account_through_limited_page(self):
-        self.client.force_login(self.user)
+    def test_default_marker_is_installed_without_access_grants(self):
+        group = Dojo_Group.objects.get(name="Restricted Finding Editors")
+        self.assertTrue(RestrictedGroupPolicy.objects.get(group=group).is_active)
+        self.assertFalse(Product_Group.objects.filter(group=group).exists())
+        self.assertFalse(Product_Type_Group.objects.filter(group=group).exists())
+        target = User.objects.create_user(username="marker-member", email="marker@example.test")
+        Dojo_Group_Member.objects.create(group=group, user=target, role=self.reader)
+        self.assertFalse(user_has_permission(target, self.a, Permissions.Product_View))
+        Product_Member.objects.create(product=self.a, user=target, role=self.writer)
+        self.assertTrue(user_has_permission(target, self.a, Permissions.Finding_Edit))
+        self.assertFalse(user_has_permission(target, self.a, Permissions.Engagement_Edit))
 
-        response = self.client.post(
-            reverse("dojo_permission:manage_policy_members", args=(self.policy.id,)),
-            {
-                "action": "invite_new",
-                "invite-username": "sso-page-user",
-                "invite-email": "sso-page-user@example.test",
-                "invite-first_name": "SSO",
-                "invite-last_name": "User",
-                "invite-authentication_method": "sso",
-            },
-        )
+    def test_group_reader_writer_and_maintainer_all_receive_restrictions(self):
+        for role in (self.reader, self.writer, self.maintainer):
+            self.membership.role = role
+            self.membership.save(update_fields=("role",))
+            for permission in DENIED:
+                with self.subTest(role=role, permission=permission):
+                    self.assertFalse(user_has_permission(self.user, self.a, permission))
+            self.assertTrue(user_has_permission(self.user, self.a, Permissions.Finding_Edit))
 
-        self.assertRedirects(
-            response,
-            reverse("dojo_permission:manage_policy_members", args=(self.policy.id,)),
-        )
-        invited = get_user_model().objects.get(username="sso-page-user")
-        self.assertFalse(invited.has_usable_password())
-        membership = Dojo_Group_Member.objects.get(group=self.group, user=invited)
-        self.assertEqual(membership.role_id, self.writer.id)
+    def test_assignment_role_does_not_silently_disable_restrictions(self):
+        for role in (self.reader, self.writer, self.maintainer, self.owner):
+            Product_Group.objects.filter(group=self.policy.group).update(role=role)
+            self.assertTrue(policy_denies_permission(self.user, self.a, Permissions.Engagement_Edit))
 
-    def test_superuser_keeps_native_group_page(self):
-        superuser = get_user_model().objects.create_superuser(
-            username="native-group-superuser",
-            email="native-group-superuser@example.test",
-        )
-        self.client.force_login(superuser)
+    def test_group_owner_preserves_native_permissions(self):
+        self.membership.role = self.owner
+        self.membership.save(update_fields=("role",))
+        self.assertTrue(user_has_permission(self.user, self.a, Permissions.Engagement_Edit))
 
-        response = self.client.get(reverse("view_group", args=(self.group.id,)))
-
-        self.assertEqual(response.status_code, 200)
-        self.assertTemplateUsed(response, "dojo/view_group.html")
-
-    def test_restricted_group_maintainer_can_delegate_same_group_role(self):
-        requester_membership = Dojo_Group_Member.objects.get(group=self.group, user=self.user)
-        requester_membership.role = self.maintainer
-        requester_membership.save(update_fields=("role",))
-        target = get_user_model().objects.create_user(
-            username="maintainer-delegated-user",
-            email="maintainer-delegated@example.test",
-        )
-
-        result = add_existing_user_to_policy(
-            requester=self.user,
-            target_user=target,
-            policy=self.policy,
-        )
-
-        self.assertTrue(result.created)
-        self.assertEqual(result.membership.role_id, self.maintainer.id)
-        self.assertFalse(user_has_permission(target, self.product, Permissions.Finding_Add))
-        self.assertTrue(user_has_permission(target, self.product, Permissions.Finding_Edit))
-
-    def test_restricted_group_owner_does_not_receive_limited_delegation_flow(self):
-        requester_membership = Dojo_Group_Member.objects.get(group=self.group, user=self.user)
-        requester_membership.role = self.owner
-        requester_membership.save(update_fields=("role",))
-        target = get_user_model().objects.create_user(
-            username="owner-target-user",
-            email="owner-target@example.test",
-        )
-
+    def test_duplicate_owner_membership_keeps_native_owner_flow(self):
+        Dojo_Group_Member.objects.create(group=self.policy.group, user=self.user, role=self.owner)
+        self.assertTrue(user_has_permission(self.user, self.a, Permissions.Engagement_Edit))
         with self.assertRaises(PermissionDenied):
-            add_existing_user_to_policy(
-                requester=self.user,
-                target_user=target,
-                policy=self.policy,
-            )
+            requester_policy_membership(self.user, self.policy)
 
-    def test_independent_maintainer_role_is_not_restricted(self):
-        Product_Member.objects.create(
-            product=self.product,
-            user=self.user,
-            role=self.maintainer,
-        )
-        privileged_permissions = (
-            Permissions.Engagement_Add,
-            Permissions.Engagement_Delete,
-            Permissions.Test_Add,
-            Permissions.Import_Scan_Result,
-            Permissions.Finding_Add,
-            Permissions.Finding_Delete,
-        )
-        for permission in privileged_permissions:
-            with self.subTest(permission=permission):
-                self.assertTrue(user_has_permission(self.user, self.product, permission))
+    def test_independent_maintainer_is_not_silently_downgraded(self):
+        Product_Member.objects.create(product=self.a, user=self.user, role=self.maintainer)
+        self.assertTrue(user_has_permission(self.user, self.a, Permissions.Engagement_Edit))
 
-    def test_copy_finding_route_is_denied_by_finding_add_policy(self):
-        request = RequestFactory().get("/finding/123/copy")
-        request.user = self.user
-        finding = object()
-
-        def copy_finding(request, fid):
-            return HttpResponse()
-
-        copy_finding.__module__ = "dojo.finding.views"
-        middleware = RestrictedActionMiddleware(lambda request: HttpResponse())
-        with (
-            patch("dojo_permission.middleware.get_object_or_404", return_value=finding),
-            patch("dojo_permission.middleware.policy_denies_permission", return_value=True) as deny,
-            self.assertRaises(PermissionDenied),
-        ):
-            middleware.process_view(request, copy_finding, (), {"fid": 123})
-
-        deny.assert_called_once_with(request.user, finding, Permissions.Finding_Add)
-
-    def test_unrelated_copy_finding_function_is_not_intercepted(self):
-        request = RequestFactory().get("/custom/copy")
-        request.user = self.user
-
-        def copy_finding(request, fid):
-            return HttpResponse("custom")
-
-        middleware = RestrictedActionMiddleware(lambda request: HttpResponse())
-        with patch("dojo_permission.middleware.get_object_or_404") as lookup:
-            response = middleware.process_view(request, copy_finding, (), {"fid": 123})
-
-        self.assertIsNone(response)
-        lookup.assert_not_called()
-
-    def test_added_existing_user_inherits_group_role_only(self):
-        other_group = Dojo_Group.objects.create(name="Other group")
-        target = get_user_model().objects.create_user(
-            username="existing-user",
-            email="existing@example.test",
-        )
-        Dojo_Group_Member.objects.create(
-            group=other_group,
-            user=target,
-            role=self.maintainer,
-        )
-
-        result = add_existing_user_to_policy(
-            requester=self.user,
-            target_user=target,
-            policy=self.policy,
-        )
-
-        self.assertTrue(result.created)
-        self.assertEqual(result.membership.role_id, self.writer.id)
-        self.assertEqual(
-            Dojo_Group_Member.objects.get(group=other_group, user=target).role_id,
-            self.maintainer.id,
-        )
-
-    def test_created_sso_user_has_unusable_password_and_inherited_group(self):
-        invited = create_invited_user(
-            requester=self.user,
-            policy=self.policy,
-            username="sso-user",
-            email="sso@example.test",
-        )
-
-        self.assertFalse(invited.has_usable_password())
-        membership = Dojo_Group_Member.objects.get(group=self.group, user=invited)
-        self.assertEqual(membership.role_id, self.writer.id)
-
-    def test_group_form_checkbox_activates_and_deactivates_policy(self):
-        create_form = RestrictedDojoGroupForm(data={
-            "name": "Checkbox restricted group",
-            "description": "Created through the DefectDojo group form",
-            "apply_restrictions": "on",
-        })
-        self.assertTrue(create_form.is_valid(), create_form.errors)
-        group = create_form.save()
-        policy = RestrictedGroupPolicy.objects.get(group=group)
+    def test_legacy_checked_group_preserves_active_policy_on_upgrade(self):
+        group = Dojo_Group.objects.create(name="Legacy checked group")
+        policy = RestrictedGroupPolicy.objects.create(group=group)
+        target = User.objects.create_user(username="legacy-member", email="legacy@example.test")
+        Dojo_Group_Member.objects.create(group=group, user=target, role=self.reader)
+        Product_Group.objects.create(product=self.a, group=group, role=self.maintainer)
+        self.assertFalse(user_has_permission(target, self.a, Permissions.Finding_Delete))
         self.assertTrue(policy.is_active)
 
-        policy_admin = get_user_model().objects.create_superuser(
-            username="checkbox-policy-admin",
-            email="checkbox-policy-admin@example.test",
-        )
+    def test_legacy_policy_group_global_writer_is_restricted(self):
+        group = Dojo_Group.objects.create(name="Legacy global restricted group")
+        RestrictedGroupPolicy.objects.create(group=group)
+        Dojo_Group_Member.objects.create(group=group, user=self.user, role=self.reader)
+        Global_Role.objects.create(group=group, role=self.writer)
+        self.assertFalse(user_has_permission(self.user, self.b, Permissions.Engagement_Edit))
 
-        edit_form = RestrictedDojoGroupForm(data={
-            "name": group.name,
-            "description": group.description,
-        }, instance=group, policy_actor=policy_admin)
-        self.assertTrue(edit_form.is_valid(), edit_form.errors)
-        edit_form.save()
-        policy.refresh_from_db()
-        self.assertFalse(policy.is_active)
+    def test_inactive_policy_group_can_be_deleted(self):
+        group = Dojo_Group.objects.create(name="Inactive legacy group")
+        policy = RestrictedGroupPolicy.objects.create(group=group, is_active=False)
+        policy_id = policy.pk
+        group.delete()
+        self.assertFalse(RestrictedGroupPolicy.objects.filter(pk=policy_id).exists())
 
-    def test_group_form_shows_active_policy_as_checked(self):
-        form = RestrictedDojoGroupForm(instance=self.group)
+    def test_invitation_page_does_not_list_existing_accounts(self):
+        response = self.client.get(reverse("dojo_permission:manage_policy_members", args=(self.policy.pk,)))
+        self.assertEqual(response.status_code, 200)
+        for text in ("Add an existing account", "existing-user", self.foreign.username, self.foreign.email):
+            self.assertNotContains(response, text)
 
-        self.assertTrue(form.fields["apply_restrictions"].initial)
+    def test_foreign_policy_page_and_service_are_denied(self):
+        response = self.client.get(reverse("dojo_permission:manage_policy_members", args=(self.other_policy.pk,)))
+        self.assertIn(response.status_code, (403, 404))
+        with self.assertRaises(PermissionDenied):
+            self.invite(policy=self.other_policy)
 
-    def test_group_form_without_actor_cannot_disable_existing_policy(self):
-        form = RestrictedDojoGroupForm(
-            data={
-                "name": self.group.name,
-                "description": self.group.description,
-            },
-            instance=self.group,
-        )
+    def test_existing_account_assignment_is_admin_only(self):
+        with self.assertRaises(PermissionDenied):
+            add_existing_user_to_policy(requester=self.user, target_user=self.foreign, policy=self.policy)
+        response = self.client.post(reverse("dojo_permission:manage_policy_members", args=(self.policy.pk,)), {"action": "add_existing", "existing-user": self.foreign.pk})
+        self.assertIn(response.status_code, (400, 403))
+        self.assertFalse(Dojo_Group_Member.objects.filter(group=self.policy.group, user=self.foreign).exists())
 
-        self.assertTrue(form.fields["apply_restrictions"].disabled)
-        self.assertTrue(form.is_valid(), form.errors)
-        form.save()
-        self.policy.refresh_from_db()
-        self.assertTrue(self.policy.is_active)
+    def test_new_user_inherits_only_selected_product_policy_and_group_role(self):
+        target = self.invite()
+        self.assertFalse(target.has_usable_password())
+        self.assertFalse(target.is_staff)
+        self.assertFalse(target.is_superuser)
+        members = Dojo_Group_Member.objects.filter(user=target)
+        self.assertEqual(list(members.values_list("group_id", "role_id")), [(self.policy.group_id, self.reader.pk)])
+        self.assertTrue(user_has_permission(target, self.a, Permissions.Finding_Edit))
+        self.assertFalse(user_has_permission(target, self.b, Permissions.Product_View))
+        self.assertFalse(user_has_permission(target, self.a, Permissions.Engagement_Edit))
 
-    def test_restricted_maintainer_cannot_disable_group_policy(self):
-        membership = Dojo_Group_Member.objects.get(group=self.group, user=self.user)
-        membership.role = self.maintainer
-        membership.save(update_fields=("role",))
-        form = RestrictedDojoGroupForm(
-            data={
-                "name": self.group.name,
-                "description": self.group.description,
-            },
-            instance=self.group,
-            policy_actor=self.user,
-        )
+    def test_bound_policy_cannot_be_submitted_for_another_product(self):
+        with self.assertRaises(PermissionDenied):
+            self.invite(product=self.b)
+        self.assertFalse(User.objects.filter(username="invited-new").exists())
 
-        self.assertTrue(form.fields["apply_restrictions"].disabled)
-        self.assertTrue(form.is_valid(), form.errors)
-        form.save()
-        self.policy.refresh_from_db()
-        self.assertTrue(self.policy.is_active)
+    def test_marker_invitation_grants_only_one_selected_product(self):
+        marker = RestrictedGroupPolicy.objects.get(is_default=True)
+        Dojo_Group_Member.objects.create(group=marker.group, user=self.user, role=self.reader)
+        Product_Member.objects.create(product=self.b, user=self.user, role=self.writer)
+        target = self.invite(policy=marker, product=self.a)
+        self.assertEqual(list(Dojo_Group_Member.objects.filter(user=target).values_list("group_id", flat=True)), [self.policy.group_id])
+        self.assertFalse(user_has_permission(target, self.b, Permissions.Product_View))
 
-    def test_restricted_group_owner_can_disable_group_policy(self):
-        membership = Dojo_Group_Member.objects.get(group=self.group, user=self.user)
-        membership.role = self.owner
-        membership.save(update_fields=("role",))
-        form = RestrictedDojoGroupForm(
-            data={
-                "name": self.group.name,
-                "description": self.group.description,
-            },
-            instance=self.group,
-            policy_actor=self.user,
-        )
+    def test_marker_invitation_cannot_grant_a_foreign_product(self):
+        marker = RestrictedGroupPolicy.objects.get(is_default=True)
+        Dojo_Group_Member.objects.create(group=marker.group, user=self.user, role=self.reader)
+        with self.assertRaises(PermissionDenied):
+            self.invite(policy=marker, product=self.b)
 
-        self.assertFalse(form.fields["apply_restrictions"].disabled)
-        self.assertTrue(form.is_valid(), form.errors)
-        form.save()
-        self.policy.refresh_from_db()
-        self.assertFalse(self.policy.is_active)
+    def test_sso_creation_page_assigns_only_scoped_membership(self):
+        response = self.client.post(reverse("dojo_permission:manage_policy_members", args=(self.policy.pk,)), {
+            "action": "invite_new", "invite-username": "sso-page-new",
+            "invite-email": "sso-page@example.test", "invite-authentication_method": "sso",
+        })
+        self.assertEqual(response.status_code, 302)
+        target = User.objects.get(username="sso-page-new")
+        self.assertFalse(target.has_usable_password())
+        self.assertFalse(user_has_permission(target, self.b, Permissions.Product_View))
+
+    def test_email_failure_does_not_claim_success_or_lose_created_membership(self):
+        with patch("dojo_permission.views.send_password_invitation", side_effect=InvitationEmailError):
+            response = self.client.post(reverse("dojo_permission:manage_policy_members", args=(self.policy.pk,)), {
+                "action": "invite_new", "invite-username": "email-page-new",
+                "invite-email": "email-page@example.test", "invite-authentication_method": "email",
+            }, follow=True)
+        self.assertContains(response, "setup email could not be sent")
+        self.assertNotContains(response, "password setup email was sent")
+        target = User.objects.get(username="email-page-new")
+        self.assertTrue(Dojo_Group_Member.objects.filter(group=self.policy.group, user=target).exists())
+
+    def test_default_group_cannot_escape_new_user_scope(self):
+        settings = System_Settings.objects.get()
+        settings.default_group = self.other_policy.group
+        settings.default_group_role = self.maintainer
+        settings.default_group_email_pattern = ""
+        settings.save()
+        target = self.invite()
+        self.assertFalse(Dojo_Group_Member.objects.filter(group=self.other_policy.group, user=target).exists())
+        self.assertFalse(user_has_permission(target, self.b, Permissions.Product_View))
+        self.assertEqual(Dojo_Group_Member.objects.filter(user=target).count(), 1)
+
+    def test_duplicate_account_is_not_modified_or_identified(self):
+        before = list(Dojo_Group_Member.objects.filter(user=self.foreign).values_list("group_id", "role_id"))
+        with self.assertRaises(ValidationError) as exc:
+            self.invite(username=self.foreign.username, email=self.foreign.email)
+        self.assertNotIn(self.foreign.username, str(exc.exception))
+        self.assertNotIn(self.foreign.email, str(exc.exception))
+        self.assertEqual(before, list(Dojo_Group_Member.objects.filter(user=self.foreign).values_list("group_id", "role_id")))
+
+    def test_multi_product_group_tampering_fails_closed(self):
+        Product_Group.objects.create(group=self.policy.group, product=self.b, role=self.writer)
+        with self.assertRaises((PermissionDenied, ValidationError)):
+            self.invite()
+        self.assertFalse(User.objects.filter(username="invited-new").exists())
+
+    def test_global_role_group_tampering_fails_closed(self):
+        Global_Role.objects.create(group=self.policy.group, role=self.writer)
+        with self.assertRaises((PermissionDenied, ValidationError)):
+            self.invite()
+
+    def test_config_permission_group_tampering_fails_closed(self):
+        self.policy.group.auth_group.permissions.add(Permission.objects.get(codename="view_user", content_type__app_label="auth"))
+        with self.assertRaises((PermissionDenied, ValidationError)):
+            self.invite()
+
+    @override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend", SITE_URL="http://testserver")
+    def test_email_invitation_has_real_single_use_setup_token(self):
+        target = self.invite()
+        request = self.client.get(reverse("dojo_permission:manage_policy_members", args=(self.policy.pk,))).wsgi_request
+        send_password_invitation(user=target, request=request)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(mail.outbox[0].to, [target.email])
+        self.assertIn(urlsafe_base64_encode(force_bytes(target.pk)), mail.outbox[0].body)
+        token = re.search(r"[0-9a-z]+-[0-9a-f]{32}", mail.outbox[0].body).group(0)
+        self.assertTrue(default_token_generator.check_token(target, token))
+        target.set_unusable_password()
+        target.save()
+        self.assertFalse(default_token_generator.check_token(target, token))
+
+    def test_native_user_directory_is_denied_even_with_configuration_permission(self):
+        self.user.user_permissions.add(Permission.objects.get(codename="view_user", content_type__app_label="auth"))
+        for url in ("/user", reverse("view_user", args=(self.foreign.pk,)), "/api/v2/users/", f"/api/v2/users/{self.foreign.pk}/"):
+            with self.subTest(url=url):
+                response = self.client.get(url)
+                self.assertIn(response.status_code, (403, 404))
+                self.assertNotContains(response, self.foreign.email, status_code=response.status_code)
+
+    def test_group_member_api_never_lists_foreign_members(self):
+        response = self.client.get("/api/v2/dojo_group_members/")
+        self.assertIn(response.status_code, (200, 403))
+        if response.status_code == 200:
+            data = response.json()
+            for item in data if isinstance(data, list) else data.get("results", []):
+                self.assertNotEqual(item.get("user"), self.foreign.pk)
+
+    def test_native_maintainer_cannot_escalate_group_members(self):
+        self.membership.role = self.maintainer
+        self.membership.save(update_fields=("role",))
+        for permission in (Permissions.Group_Edit, Permissions.Group_Manage_Members, Permissions.Group_Member_Delete):
+            self.assertFalse(user_has_permission(self.user, self.policy.group, permission))
+        response = self.client.post("/api/v2/dojo_group_members/", {"group": self.policy.group_id, "user": self.foreign.pk, "role": self.maintainer.pk})
+        self.assertIn(response.status_code, (403, 404))
+
+    def test_native_product_member_route_cannot_create_privileged_bypass(self):
+        Product_Group.objects.filter(group=self.policy.group).update(role=self.maintainer)
+        response = self.client.post("/api/v2/product_members/", {"product": self.a.pk, "user": self.user.pk, "role": self.maintainer.pk})
+        self.assertIn(response.status_code, (403, 404))
+        self.assertFalse(Product_Member.objects.filter(product=self.a, user=self.user).exists())
+
+    def test_engagement_add_edit_delete_api_are_blocked(self):
+        response = self.client.post("/api/v2/engagements/", {"product": self.a.pk, "name": "Forbidden", "target_start": str(date.today()), "target_end": str(date.today())})
+        self.assertEqual(response.status_code, 403)
+        for method in ("patch", "delete"):
+            response = getattr(self.client, method)(f"/api/v2/engagements/{self.engagement.pk}/", data='{"name":"Forbidden"}', content_type="application/json")
+            self.assertEqual(response.status_code, 403)
+        self.engagement.refresh_from_db()
+        self.assertEqual(self.engagement.name, "Existing engagement")
+
+    def test_engagement_copy_get_and_post_are_blocked(self):
+        for method in ("get", "post"):
+            response = getattr(self.client, method)(reverse("copy_engagement", args=(self.engagement.pk,)))
+            self.assertEqual(response.status_code, 403)
+        self.assertEqual(Engagement.objects.filter(product=self.a).count(), 1)
+
+    def test_finding_edit_api_still_works(self):
+        response = self.client.patch(f"/api/v2/findings/{self.finding.pk}/", data='{"title":"Allowed finding edit"}', content_type="application/json")
+        self.assertEqual(response.status_code, 200, response.content)
+        self.finding.refresh_from_db()
+        self.assertEqual(self.finding.title, "Allowed Finding Edit")
+
+    def test_finding_create_and_delete_are_blocked(self):
+        self.assertEqual(self.client.post("/api/v2/findings/", {"test": self.test.pk, "title": "Forbidden"}).status_code, 403)
+        self.assertEqual(self.client.delete(f"/api/v2/findings/{self.finding.pk}/").status_code, 403)
+
+    def test_test_creation_import_reimport_and_product_mutations_are_blocked(self):
+        for url, data in (
+            ("/api/v2/tests/", {"engagement": self.engagement.pk}),
+            ("/api/v2/import-scan/", {"engagement": self.engagement.pk, "scan_type": "Generic Findings Import"}),
+            ("/api/v2/reimport-scan/", {"test": self.test.pk, "scan_type": "Generic Findings Import"}),
+            ("/api/v2/product_groups/", {"product": self.a.pk, "group": self.other_policy.group_id, "role": self.writer.pk}),
+        ):
+            with self.subTest(url=url):
+                response = self.client.post(url, data)
+                self.assertEqual(response.status_code, 403, response.content)
+        self.assertEqual(self.client.delete(f"/api/v2/products/{self.a.pk}/").status_code, 403)
+
+    def test_product_group_assignment_edit_and_delete_are_blocked(self):
+        assignment = Product_Group.objects.get(group=self.policy.group)
+        Product_Group.objects.filter(pk=assignment.pk).update(role=self.maintainer)
+        for method in ("put", "delete"):
+            response = getattr(self.client, method)(f"/api/v2/product_groups/{assignment.pk}/", data='{"role":4}', content_type="application/json")
+            self.assertEqual(response.status_code, 403)
+
+    def test_foreign_product_is_not_visible(self):
+        self.assertIn(self.client.get(f"/api/v2/products/{self.b.pk}/").status_code, (403, 404))
+
+    def test_admin_retains_native_forms_and_manual_account_assignment(self):
+        admin = User.objects.create_superuser(username="test-native-admin", email="admin@example.test")
+        self.client.force_login(admin)
+        for name, pk in (("edit_group", self.policy.group_id), ("edit_user", self.user.pk)):
+            response = self.client.get(reverse(name, args=(pk,)))
+            self.assertEqual(response.status_code, 200)
+            self.assertNotContains(response, "Do you want to apply delete/edit restrictions")
+        self.assertEqual(self.client.get("/api/v2/users/").status_code, 200)
+        response = self.client.post("/api/v2/dojo_group_members/", {"group": self.policy.group_id, "user": self.foreign.pk, "role": self.reader.pk})
+        self.assertEqual(response.status_code, 201, response.content)
+        self.assertTrue(Dojo_Group_Member.objects.filter(group=self.policy.group, user=self.foreign).exists())
+
+    def test_admin_native_group_create_and_edit_post_without_checkbox(self):
+        admin = User.objects.create_superuser(username="native-form-admin", email="nativeform@example.test")
+        self.client.force_login(admin)
+        response = self.client.post(reverse("add_group"), {"name": "Ordinary group", "description": "Created", "role": ""})
+        self.assertEqual(response.status_code, 302)
+        group = Dojo_Group.objects.get(name="Ordinary group")
+        self.assertFalse(RestrictedGroupPolicy.objects.filter(group=group).exists())
+        response = self.client.post(reverse("edit_group", args=(group.pk,)), {"name": group.name, "description": "Edited", "role": ""})
+        self.assertEqual(response.status_code, 302)
+        group.refresh_from_db()
+        self.assertEqual(group.description, "Edited")

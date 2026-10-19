@@ -21,9 +21,11 @@ replace the existing nginx image, volumes, secrets, entrypoints, or settings
 mounts. The proxy container may restart after web cutover so it can resolve the
 recreated web container, but its image remains unchanged.
 
-The script rejects an already-enabled installation. Upgrades, Kubernetes,
-Swarm, multiple hosts, and replicated web/worker/beat services need a
-release-specific blue/green plan rather than this cutover script.
+For a managed 0.1.0/0.2.0 installation, update the library checkout and rerun
+`bash deploy/install-existing.sh`; it retains the previous enabled image for
+rollback. The explicit first-install commands below reject already-enabled
+deployments. Kubernetes, Swarm, multiple hosts, and replicated web/worker/beat
+services need their own cutover plan.
 
 ## 1. Prerequisites
 
@@ -102,7 +104,7 @@ umask 077
 
 DD_LIBRARY_ROOT="/opt/dojo-permission-adon"
 DD_PERMISSION_COMMIT="$(git -C "$DD_LIBRARY_ROOT" rev-parse HEAD)"
-DD_RELEASE_ID="0.1.0-${DD_PERMISSION_COMMIT:0:12}-$(date -u +%Y%m%dT%H%M%SZ)"
+DD_RELEASE_ID="0.2.0-${DD_PERMISSION_COMMIT:0:12}-$(date -u +%Y%m%dT%H%M%SZ)"
 
 DD_DEPLOYMENT_ROOT="/opt/defectdojo"
 DD_COMPOSE_FILE="$DD_DEPLOYMENT_ROOT/docker-compose.yml"
@@ -251,7 +253,7 @@ git clone https://github.com/madhav-dhungana/dojo-permission-adon.git
 cd dojo-permission-adon
 git checkout "$DD_PERMISSION_COMMIT"
 test -z "$(git status --porcelain)"
-DD_RELEASE_ID="0.1.0-${DD_PERMISSION_COMMIT:0:12}-$(date -u +%Y%m%dT%H%M%SZ)"
+DD_RELEASE_ID="0.2.0-${DD_PERMISSION_COMMIT:0:12}-$(date -u +%Y%m%dT%H%M%SZ)"
 ```
 
 Set the exact values recorded on the deployment host. Authenticate using the
@@ -416,51 +418,16 @@ migrations, or builds an inherited Compose `build:` definition.
 
 ## 6. Configure a restricted group
 
-Installation creates the policy table but does not enable a group. Use either
-the UI or the management command.
+Installation provisions **Restricted Finding Editors** and one managed group
+for each product automatically. No checkbox or provisioning command is needed.
+An administrator assigns existing accounts through normal group administration:
+the default group restricts existing native access without granting product
+access, while a product group grants restricted access to exactly that product.
+Keep managed product-group assignments unchanged.
 
-### Option 1: DefectDojo UI
-
-1. Create or edit a group.
-2. Check **Do you want to apply delete/edit restrictions to this group?**
-3. Assign the group to the intended product or product type with **Writer**
-   access.
-4. Add intended members as Reader, Writer, or Maintainer. An Owner is exempt
-   from the restriction, as is a superuser.
-
-Eligible restricted members who open the normal group link are redirected to
-the limited page for adding an existing account or creating an email/SSO
-account in that same group.
-
-### Option 2: management command
-
-Find the relevant IDs in DefectDojo, then run the command through the active
-web service. Select only the intended scope. This example uses one product; to
-scope by product type instead, replace the `DD_SCOPE_ARGS` line with
-`DD_SCOPE_ARGS=(--product-type "$DD_PRODUCT_TYPE_ID")`.
-
-```bash
-DD_RELEASE_COMPOSE=("${DD_COMPOSE[@]}" --file "$DD_RELEASE_OVERRIDE")
-DD_PRODUCT_ID="REPLACE_WITH_PRODUCT_ID"
-DD_PRODUCT_TYPE_ID="REPLACE_WITH_PRODUCT_TYPE_ID"
-DD_MEMBER_USERNAME="REPLACE_WITH_EXISTING_USERNAME"
-
-test "$DD_PRODUCT_ID" != "REPLACE_WITH_PRODUCT_ID"
-test "$DD_MEMBER_USERNAME" != "REPLACE_WITH_EXISTING_USERNAME"
-DD_SCOPE_ARGS=(--product "$DD_PRODUCT_ID")
-
-"${DD_RELEASE_COMPOSE[@]}" exec -T "$DD_WEB_SERVICE" \
-  python manage.py provision_dojo_permission_group \
-  --name "Restricted Writers" \
-  --description "Restricted existing-finding editors" \
-  "${DD_SCOPE_ARGS[@]}" \
-  --member "$DD_MEMBER_USERNAME"
-```
-
-The command enables the policy, creates Writer product/product-type links, and
-adds the optional initial member as Writer. It refuses to overwrite an existing
-non-Writer assignment. Adjust the member's group role through the UI if Reader
-or Maintainer is required.
+Eligible restricted members can create or invite a new email/SSO account for
+one selected product. Existing-account assignments remain administrator-only.
+Restricted-group Owners and superusers retain native permissions.
 
 ## 7. Validate the installation
 
@@ -475,7 +442,7 @@ DD_RELEASE_COMPOSE=("${DD_COMPOSE[@]}" --file "$DD_RELEASE_OVERRIDE")
   python manage.py check
 "${DD_RELEASE_COMPOSE[@]}" exec -T "$DD_WEB_SERVICE" \
   python manage.py showmigrations dojo_permission | \
-  grep -F '[X] 0001_initial'
+  grep -F '[X] 0002_product_bound_policies'
 curl --fail --silent --show-error "$DD_HEALTH_URL" >/dev/null
 ```
 
@@ -499,15 +466,14 @@ unset DD_SERVICE DD_CONTAINER_ID
 Complete these browser checks:
 
 1. A superuser can view, create, and edit users and groups.
-2. Restricted Reader, Writer, and Maintainer members can edit existing findings
-   but cannot create engagements/tests/findings, import or re-import scans,
-   copy/delete findings, or delete engagements.
-3. A restricted member can add an existing account or create a new email/SSO
-   account in the same restricted group.
+2. Restricted Reader, Writer, and Maintainer members retain native finding
+   editing but cannot edit/copy engagements, create engagements/tests/findings,
+   import or re-import scans, copy/delete findings, or delete engagements.
+3. A restricted member can create or invite a new email/SSO account for one
+   selected product; existing accounts can only be assigned by an administrator.
 4. Restricted-group Owners and superusers retain native permissions.
-5. The restriction checkbox remains enabled. If deactivation is tested in a
-   staging environment, immediately re-enable it and re-verify the restricted
-   permission matrix before allowing production traffic.
+5. The managed groups retain their intended product scope and restricted
+   members cannot change product/group access or browse the global user list.
 
 Email invitations require working SMTP. SSO sign-in requires a configured
 identity provider.

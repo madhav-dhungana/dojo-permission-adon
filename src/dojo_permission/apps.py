@@ -10,6 +10,8 @@ class DojoPermissionConfig(AppConfig):
         from dojo_permission import checks  # noqa: F401
         from dojo_permission.admin import register_admin
         from dojo_permission.patching import install_authorization_overlay
+        from dojo_permission.provisioning import register_provisioning_signals
 
         register_admin()
         install_authorization_overlay()
+        register_provisioning_signals(self)

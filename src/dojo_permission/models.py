@@ -7,9 +7,17 @@ class RestrictedGroupPolicy(models.Model):
 
     group = models.OneToOneField(
         "dojo.Dojo_Group",
-        on_delete=models.PROTECT,
+        on_delete=models.CASCADE,
         related_name="dojo_permission_policy",
     )
+    product = models.ForeignKey(
+        "dojo.Product",
+        null=True,
+        blank=True,
+        on_delete=models.CASCADE,
+        related_name="dojo_permission_policies",
+    )
+    is_default = models.BooleanField(default=False, db_default=False)
     is_active = models.BooleanField(default=True)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -22,6 +30,18 @@ class RestrictedGroupPolicy(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
+        constraints = (
+            models.UniqueConstraint(
+                fields=("product",),
+                condition=models.Q(product__isnull=False),
+                name="dojo_permission_unique_product_policy",
+            ),
+            models.UniqueConstraint(
+                fields=("is_default",),
+                condition=models.Q(is_default=True),
+                name="dojo_permission_unique_default_policy",
+            ),
+        )
         ordering = ("group__name",)
         verbose_name = "restricted group policy"
         verbose_name_plural = "restricted group policies"

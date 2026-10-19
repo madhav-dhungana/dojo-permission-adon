@@ -1,43 +1,46 @@
-from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand, CommandError
 
-from dojo.models import Product, Product_Type
+from dojo.models import Product
 
-from dojo_permission.services import provision_policy_group
+from dojo_permission.provisioning import (
+    ManagedGroupCollision,
+    ProvisioningUnavailable,
+    ensure_default_managed_group,
+    ensure_product_policy,
+)
 
 
 class Command(BaseCommand):
-    help = "Create or update a restricted Writer delegation group."
+    help = "Reconcile dojo-permission's default marker and product-bound groups."
 
     def add_arguments(self, parser):
-        parser.add_argument("--name", required=True)
-        parser.add_argument("--description", default="")
-        parser.add_argument("--product", action="append", type=int, default=[])
-        parser.add_argument("--product-type", action="append", type=int, default=[])
-        parser.add_argument("--member")
+        parser.add_argument(
+            "--product",
+            action="append",
+            type=int,
+            default=[],
+            help="Reconcile this product ID; repeat as needed. Omit for all products.",
+        )
 
     def handle(self, *args, **options):
-        products = tuple(Product.objects.filter(id__in=options["product"]))
-        product_types = tuple(Product_Type.objects.filter(id__in=options["product_type"]))
-        if len(products) != len(set(options["product"])):
-            raise CommandError("One or more requested product IDs do not exist.")
-        if len(product_types) != len(set(options["product_type"])):
-            raise CommandError("One or more requested product type IDs do not exist.")
+        requested_ids = set(options["product"])
+        products = Product.objects.filter(pk__in=requested_ids) if requested_ids else Product.objects.all()
+        if requested_ids:
+            found_ids = set(products.values_list("pk", flat=True))
+            missing_ids = requested_ids - found_ids
+            if missing_ids:
+                missing = ", ".join(str(pk) for pk in sorted(missing_ids))
+                raise CommandError(f"Unknown product ID(s): {missing}.")
 
-        member = None
-        if options["member"]:
-            try:
-                member = get_user_model().objects.get(username=options["member"])
-            except get_user_model().DoesNotExist as exc:
-                raise CommandError(f"User {options['member']} does not exist.") from exc
+        try:
+            default_policy = ensure_default_managed_group()
+            product_policies = [ensure_product_policy(product) for product in products.iterator()]
+        except (ManagedGroupCollision, ProvisioningUnavailable) as exc:
+            raise CommandError(str(exc)) from exc
 
-        policy = provision_policy_group(
-            name=options["name"],
-            description=options["description"],
-            products=products,
-            product_types=product_types,
-            initial_member=member,
+        self.stdout.write(
+            self.style.SUCCESS(
+                f"Restricted marker policy {default_policy.pk} and "
+                f"{len(product_policies)} product policy/policies are ready.",
+            ),
         )
-        self.stdout.write(self.style.SUCCESS(
-            f"Restricted group policy {policy.id} is ready for group {policy.group.name}.",
-        ))

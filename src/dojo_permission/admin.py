@@ -5,9 +5,36 @@ from dojo_permission.models import RestrictedGroupPolicy
 
 
 class RestrictedGroupPolicyAdmin(admin.ModelAdmin):
-    list_display = ("group", "is_active", "created_by", "created_at", "updated_at")
+    list_display = (
+        "group",
+        "product",
+        "is_default",
+        "is_active",
+        "created_by",
+        "created_at",
+        "updated_at",
+    )
     list_filter = ("is_active",)
-    search_fields = ("group__name",)
+    search_fields = ("group__name", "product__name")
+    readonly_fields = (
+        "group",
+        "product",
+        "is_default",
+        "is_active",
+        "created_by",
+        "created_at",
+        "updated_at",
+    )
+    list_select_related = ("group", "product", "created_by")
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
 
 
 def register_admin() -> None:

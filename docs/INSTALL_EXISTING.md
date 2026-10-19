@@ -27,10 +27,10 @@ registries, and host curl must trust the URL used for the health check. Set
 `CURL_CA_BUNDLE` in the installer configuration when your host requires a
 separate CA bundle.
 
-This is a first installation workflow. A deployment already enabled by
-another installation method must be returned to its known working baseline
-before using it. Do not use this installer as a library upgrade mechanism.
-Multi-host or replicated deployments need their own cutover plan.
+The same command installs a new library or updates a managed 0.1.0/0.2.0
+installation. An enabled deployment from another installation method requires
+a reviewed conversion to the managed configuration first. Multi-host or
+replicated deployments need their own cutover plan.
 
 ## 2. Clone the library
 
@@ -170,9 +170,11 @@ environment variable for web, initializer, worker, and beat. Existing port
 mappings, volume mounts, entrypoints, secrets, certificate settings, and the
 proxy image continue to come from your original Compose configuration.
 
-The installation creates the library-owned policy table. It does not enable
-restrictions for any group automatically. Rerunning this command for the same
-managed release verifies the installation; it does not create another stack.
+The installation applies the library-owned migrations and provisions the
+managed restricted groups. Existing user memberships are preserved. After
+`git pull --ff-only`, rerun the same command to update a managed installation;
+the previous enabled image remains available for rollback. At the same package
+version and source revision, rerunning only verifies the healthy deployment.
 
 ## 5. Use the installed deployment
 
@@ -189,18 +191,20 @@ bash "/absolute/path/to/generated/compose.sh" exec -T uwsgi \
 ```
 
 Use your configured web service name instead of `uwsgi` when it differs.
-`showmigrations` should show `[X] 0001_initial`. Continue to use the same
+`showmigrations` should show every library migration checked, including
+`[X] 0002_product_bound_policies`. Continue to use the same
 DefectDojo URL and existing administrator credentials.
 
-To enable a group, create or edit it as an administrator and check
-**Do you want to apply delete/edit restrictions to this group?** Assign the
-group to its intended product or product type with Writer access. Reader,
-Writer, and Maintainer members receive the restriction; restricted-group
-Owners and superusers retain native permissions.
+As an administrator, assign existing accounts to **Restricted Finding Editors**
+to restrict their existing access, or to the appropriate managed product group
+for access to one product. The groups are created automatically; no checkbox
+is required. Reader, Writer, and Maintainer members receive the restriction;
+restricted-group Owners and superusers retain native permissions.
 
 Verify in the browser that an administrator can still manage users and
-groups, a restricted member can edit an existing finding and add another
-member, and blocked create/delete/import operations are denied. Email
+groups, a restricted member can edit an existing finding and invite a new
+account for one selected product, and blocked engagement edit/copy,
+create/delete/import, and access-management operations are denied. Email
 invitations require working SMTP; SSO requires the existing identity-provider
 configuration.
 
@@ -214,7 +218,9 @@ If cutover fails, the deployment helper attempts to restore the original
 settings and Django image and verifies rollback health. Keep the run directory,
 settings backup, database backup, and rollback override printed by the
 installer until the installation has been accepted. The additive policy table
-remains available for a retry.
+remains available for a retry. During a managed upgrade, rollback retains the
+previous library image with its enable flag still set; it does not disable
+the previous restrictions or reverse additive migrations.
 
 If the output says `ROLLBACK REQUIRES MANUAL ATTENTION`, inspect the reported
 service state before rerunning. For rollback after a successful installation,

@@ -3,12 +3,13 @@
 A standalone authorization extension for customized DefectDojo **2.58.3**
 release-mode deployments.
 
-The library adds an opt-in restricted-group policy without changing
-DefectDojo's core role tables or redefining the global Writer role. For an
-enabled group, Reader, Writer, and Maintainer members keep existing-finding
-editing but cannot create engagements, tests, or findings; import or re-import
-scans; copy or delete findings; or delete engagements. Restricted members can
-add an existing account or create an email/SSO account in that same group.
+The library provisions restricted groups without changing DefectDojo's core
+role tables or redefining the global Writer role. Reader, Writer, and
+Maintainer members retain their native existing-finding access but cannot
+create, edit, copy, or delete engagements; create tests or findings; import or
+re-import scans; copy or delete findings; or manage product access. Restricted
+members can create or invite a new email/SSO account into one selected product.
+Administrators assign existing accounts to the appropriate managed group.
 Restricted-group Owners and superusers keep their native permissions.
 
 See the
@@ -150,7 +151,7 @@ The Without Signing Certificate run ends with output like:
 ```text
 Local staging is ready
 DefectDojo:       2.58.3
-Dojo Permission: 0.1.0
+Dojo Permission: 0.2.0
 Image source:     build
 URL:              http://127.0.0.1:18080/login
 Admin username:   admin
@@ -239,8 +240,9 @@ image. A brief application outage is required.
 
 After installation, use the generated `compose.sh` command printed by the
 installer for future Compose operations; it includes the library override and
-the deployment's interpolation settings. Rerunning the installer verifies its
-existing installation.
+the deployment's interpolation settings. After `git pull --ff-only`, rerun
+the same installer to update a managed 0.1.0 or 0.2.0 installation. An already
+healthy installation at the same version and source revision needs no restart.
 
 Follow the
 [existing-instance installation guide](https://github.com/madhav-dhungana/dojo-permission-adon/blob/main/docs/INSTALL_EXISTING.md)

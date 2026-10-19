@@ -4,7 +4,7 @@ umask 077
 
 EXPECTED_DD_VERSION="2.58.3"
 EXPECTED_DJANGO_VERSION="5.2.14"
-PACKAGE_VERSION="0.1.0"
+PACKAGE_VERSION="0.2.0"
 PUSH_IMAGE=0
 ALLOW_DIRTY=0
 OUTPUT_FILE=""
@@ -37,14 +37,14 @@ DefectDojo 2.58.3 Django image.
 Registry/CI approach:
   build-derived-image.sh \
     --base-image registry.example/custom-dojo@sha256:<digest> \
-    --target-image registry.example/custom-dojo-permission:0.1.0 \
+    --target-image registry.example/custom-dojo-permission:0.2.0 \
     --platform linux/amd64 \
     --push --output artifacts/derived-image.env
 
 On-host approach (no registry required):
   build-derived-image.sh \
     --base-image sha256:<current-local-uwsgi-image-id> \
-    --target-image local/custom-dojo-permission:0.1.0 \
+    --target-image local/custom-dojo-permission:0.2.0 \
     --output artifacts/derived-image.env
 
 Options:
@@ -215,6 +215,7 @@ docker build --pull=false --platform "$TARGET_PLATFORM" \
     --label "org.opencontainers.image.revision=$REVISION" \
     --label "io.dojo-permission.base-image=$BASE_IMAGE" \
     --label "io.dojo-permission.defectdojo-version=$EXPECTED_DD_VERSION" \
+    --label "io.dojo-permission.package-version=$PACKAGE_VERSION" \
     --label "io.dojo-permission.platform=$TARGET_PLATFORM" \
     --file "$DOCKERFILE" \
     --tag "$TARGET_IMAGE" \

@@ -20,11 +20,12 @@ groups.
 
 ## Group configuration
 
-The normal DefectDojo group create/edit form includes the checkbox **Do you want
-to apply delete/edit restrictions to this group?**. Checking it activates the
-library-owned restricted policy for that group. Unchecking it deactivates the
-additional policy without renaming the group or changing any group membership,
-group role, or global role.
+Installation provisions **Restricted Finding Editors** and a managed restricted
+group for each product. The default group adds restrictions to the member's
+existing native access; it grants no product access. Each product group is
+bound to exactly one product with Writer access. Administrators assign existing
+accounts through DefectDojo's normal group administration. No group checkbox is
+required, and no custom native global role is created.
 
 ## Finding and engagement access
 
@@ -38,12 +39,14 @@ A member of the restricted group may:
 A member of the restricted group may not:
 
 - Create engagements.
+- Edit or copy engagements.
 - Create tests.
 - Import or re-import scan results.
 - Create findings.
 - Copy findings.
 - Delete findings.
 - Delete engagements.
+- Delete products or change product/group access assignments.
 
 The existing update behavior stays intact. Actions that create new finding
 records, directly or through a scan import, re-import, or copy, are outside the
@@ -55,13 +58,16 @@ A member may:
 
 - Create or invite a new DefectDojo account by email.
 - Invite a user who will authenticate through SSO.
-- Add an existing DefectDojo account to the relevant restricted group.
 
-The added user inherits only the relevant restricted group and the requester's
-role in that group, not every group to which the requester belongs. Existing
-roles and memberships in other groups remain unchanged. Reader, Writer, and
-Maintainer membership in the restricted group remains subject to the policy;
-Owner membership is exempt.
+The requester selects one product they can already view. The new account joins
+only that product's managed restricted group and receives no global role or
+configuration permissions. An administrator must assign existing accounts;
+restricted members cannot browse or select arbitrary existing accounts.
+Existing roles and memberships remain unchanged. Reader, Writer, and Maintainer
+membership remains subject to the policy; Owner membership is exempt.
+
+User lists and selectors for restricted members are limited to participants
+in their visible products rather than the global user directory.
 
 ## Authorization boundary
 

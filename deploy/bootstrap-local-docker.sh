@@ -589,7 +589,7 @@ printf '\nBuilding the thin permission Django image without network access...\n'
 "${PERMISSION_COMPOSE[@]}" build uwsgi
 
 "${DOCKER[@]}" run --pull=never --rm --entrypoint python "$DOJO_PERMISSION_IMAGE" -c \
-    "import dojo, django, importlib.metadata as metadata; assert dojo.__version__ == '$EXPECTED_DD_TAG'; assert django.get_version() == '$EXPECTED_DJANGO_VERSION'; assert metadata.version('dojo-permission') == '0.1.0'"
+    "import dojo, django, importlib.metadata as metadata; assert dojo.__version__ == '$EXPECTED_DD_TAG'; assert django.get_version() == '$EXPECTED_DJANGO_VERSION'; assert metadata.version('dojo-permission') == '0.2.0'"
 "${DOCKER[@]}" run --pull=never --rm --entrypoint python "$DOJO_PERMISSION_IMAGE" -m pip check
 
 printf '\nStarting the local database and broker...\n'
@@ -718,7 +718,7 @@ cat <<EOF
 
 Local staging is ready
 DefectDojo:       $EXPECTED_DD_TAG
-Dojo Permission: 0.1.0
+Dojo Permission: 0.2.0
 Image source:     $IMAGE_SOURCE
 URL:              $HEALTH_URL
 Admin username:   admin
