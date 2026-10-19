@@ -9,7 +9,7 @@ source "$SCRIPT_DIR/local-stack-common.sh"
 CONFIG_FILE="$SCRIPT_DIR/install-existing.conf"
 PLAN=0
 LOCK_DIR=""
-PACKAGE_VERSION="0.2.0"
+PACKAGE_VERSION="0.3.0"
 MANAGED_UPGRADE=0
 
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
@@ -36,7 +36,7 @@ The installer extends the exact running Django image, backs up the database
 and configuration, applies only library migrations, and restarts application
 services. It preserves the existing ports, nginx image, settings, and volumes.
 The generated private Compose launcher includes the persistent image override.
-Rerunning after git pull updates a managed 0.1.0 or 0.2.0 installation while
+Rerunning after git pull updates a managed 0.1.0, 0.2.0, or 0.3.0 installation while
 retaining the previous enabled image for rollback.
 EOF
 }
@@ -226,7 +226,7 @@ import json,sys
 p=json.load(sys.stdin)
 if p.get("defectdojo_version")!="2.58.3" or p.get("django_version")!="5.2.14" or p.get("python_version")!=[3,13]:
     sys.exit("ERROR: Requires DefectDojo 2.58.3, Django 5.2.14, and Python 3.13")
-if p.get("app_enabled") and p.get("package_version") not in {"0.1.0", "0.2.0"}:
+if p.get("app_enabled") and p.get("package_version") not in {"0.1.0", "0.2.0", "0.3.0"}:
     sys.exit("ERROR: Existing library version requires a separate upgrade procedure")
 print("true" if p.get("app_enabled") else "false")
 ')"

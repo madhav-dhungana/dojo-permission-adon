@@ -14,7 +14,9 @@ from dojo.models import (
     Global_Role,
     Product,
     Product_Group,
+    Product_Member,
     Product_Type_Group,
+    Product_Type_Member,
     Role,
     System_Settings,
     UserContactInfo,
@@ -22,13 +24,8 @@ from dojo.models import (
 from dojo.user.views import DojoPasswordResetForm
 
 from dojo_permission.models import RestrictedGroupPolicy
-from dojo_permission.policy import RESTRICTED_MEMBER_ROLES
-from dojo_permission.provisioning import (
-    ManagedGroupCollision,
-    ProvisioningUnavailable,
-    ensure_product_policy,
-    is_default_managed_policy,
-)
+from dojo_permission.policy import RESTRICTED_MEMBER_ROLES, is_restricted_user
+from dojo_permission.provisioning import is_default_managed_policy
 
 User = get_user_model()
 
@@ -55,6 +52,8 @@ def _validate_group_delegation_boundary(policy: RestrictedGroupPolicy) -> list[P
     """Fail closed if a policy group carries access outside one product."""
 
     group = policy.group
+    if group.social_provider:
+        raise PermissionDenied
     if group.auth_group_id is None or group.auth_group.permissions.exists():
         raise PermissionDenied
     # DefectDojo creates a neutral Global_Role row when an administrator saves a
@@ -100,6 +99,8 @@ def requester_policy_membership(
         or requester is None
         or requester.is_anonymous
         or requester.is_superuser
+        or not requester.is_active
+        or not is_restricted_user(requester)
     ):
         raise PermissionDenied
     if Dojo_Group_Member.objects.filter(
@@ -120,18 +121,35 @@ def requester_policy_membership(
     if membership is None or membership.role.is_owner:
         raise PermissionDenied
 
-    product = policy_product(policy)
-    if product is not None and not user_has_permission(
-        requester,
-        product,
-        Permissions.Product_View,
-    ):
+    if not policy.is_default or policy_product(policy) is not None:
         raise PermissionDenied
     return membership
 
 
 # Backwards-compatible alias for deployments importing the original helper.
 requester_writer_membership = requester_policy_membership
+
+
+def invitable_product_memberships(user, policy) -> tuple[Product_Member, ...]:
+    """Copy the complete direct assignment set, never a client-selected subset."""
+    requester_policy_membership(user, policy)
+    assignments = Product_Member.objects.filter(user=user).select_related(
+        "product", "role",
+    ).order_by("product_id", "pk")
+    by_product = {}
+    for assignment in assignments:
+        if assignment.role_id not in RESTRICTED_MEMBER_ROLES:
+            # Owner grants are intentionally not delegated by this limited UI.
+            raise PermissionDenied
+        previous = by_product.get(assignment.product_id)
+        if previous is not None and previous.role_id != assignment.role_id:
+            raise PermissionDenied
+        if not user_has_permission(user, assignment.product, Permissions.Product_View):
+            raise PermissionDenied
+        by_product[assignment.product_id] = assignment
+    if not by_product:
+        raise PermissionDenied
+    return tuple(by_product.values())
 
 
 def invitation_policies_for_user(user) -> tuple[RestrictedGroupPolicy, ...]:
@@ -147,6 +165,7 @@ def invitation_policies_for_user(user) -> tuple[RestrictedGroupPolicy, ...]:
     policies = (
         RestrictedGroupPolicy.objects.filter(
             is_active=True,
+            is_default=True,
             group_id__in=eligible_group_ids,
         )
         .select_related("group", "group__auth_group", "product")
@@ -156,18 +175,9 @@ def invitation_policies_for_user(user) -> tuple[RestrictedGroupPolicy, ...]:
     available = []
     for policy in policies:
         try:
-            requester_policy_membership(user, policy)
-            product = policy_product(policy)
+            invitable_product_memberships(user, policy)
         except PermissionDenied:
             continue
-        if product is None:
-            from dojo.product.queries import get_authorized_products
-
-            if not get_authorized_products(
-                Permissions.Finding_Edit,
-                user=user,
-            ).exists():
-                continue
         available.append(policy)
     return tuple(available)
 
@@ -183,30 +193,6 @@ def add_existing_user_to_policy(
     raise PermissionDenied
 
 
-def _selected_target_policy(
-    *,
-    requester,
-    source_policy: RestrictedGroupPolicy,
-    selected_product: Product | None,
-) -> RestrictedGroupPolicy:
-    source_product = policy_product(source_policy)
-    if source_product is not None:
-        if selected_product is not None and selected_product.pk != source_product.pk:
-            raise PermissionDenied
-        return source_policy
-
-    if selected_product is None or not user_has_permission(
-        requester,
-        selected_product,
-        Permissions.Finding_Edit,
-    ):
-        raise PermissionDenied
-    try:
-        return ensure_product_policy(selected_product)
-    except (ManagedGroupCollision, ProvisioningUnavailable) as exc:
-        raise ValidationError(GENERIC_ACCOUNT_ERROR) from exc
-
-
 def _remove_new_user_default_group(user) -> None:
     settings_row = System_Settings.objects.select_related("default_group").first()
     if settings_row is None or settings_row.default_group_id is None:
@@ -215,6 +201,24 @@ def _remove_new_user_default_group(user) -> None:
         user=user,
         group_id=settings_row.default_group_id,
     ).delete()
+
+
+def _validate_new_account_scope(user, policy, inherited_memberships, group_role_id) -> None:
+    """Custom user-creation signals must not silently broaden delegated access."""
+    user.refresh_from_db()
+    expected = {(row.product_id, row.role_id) for row in inherited_memberships}
+    actual = list(Product_Member.objects.filter(user=user).values_list("product_id", "role_id"))
+    if (
+        user.is_superuser or user.is_staff or not user.is_active
+        or set(actual) != expected or len(actual) != len(expected)
+        or list(Dojo_Group_Member.objects.filter(user=user).values_list("group_id", "role_id"))
+        != [(policy.group_id, group_role_id)]
+        or set(user.groups.values_list("pk", flat=True)) != {policy.group.auth_group_id}
+        or user.user_permissions.exists()
+        or Global_Role.objects.filter(user=user, role__isnull=False).exists()
+        or Product_Type_Member.objects.filter(user=user).exists()
+    ):
+        raise PermissionDenied
 
 
 @transaction.atomic
@@ -228,6 +232,8 @@ def create_invited_user(
     last_name: str = "",
     product: Product | None = None,
 ):
+    if product is not None:
+        raise PermissionDenied
     source_policy = (
         RestrictedGroupPolicy.objects.select_for_update(of=("self",))
         .select_related("group", "group__auth_group", "product")
@@ -235,23 +241,14 @@ def create_invited_user(
     )
     Dojo_Group.objects.select_for_update().get(pk=source_policy.group_id)
     requester_membership = requester_policy_membership(requester, source_policy)
-    target_policy = _selected_target_policy(
-        requester=requester,
-        source_policy=source_policy,
-        selected_product=product,
-    )
-    target_policy = (
-        RestrictedGroupPolicy.objects.select_for_update(of=("self",))
-        .select_related("group", "group__auth_group", "product")
-        .get(pk=target_policy.pk)
-    )
-    if target_policy.group_id != source_policy.group_id:
-        Dojo_Group.objects.select_for_update().get(pk=target_policy.group_id)
-    if not target_policy.is_active or policy_product(target_policy) is None:
-        raise PermissionDenied
+    # Keep the source grant rows stable until all inherited rows are written.
+    list(Product_Member.objects.select_for_update().filter(user=requester).order_by("pk"))
+    inherited_memberships = invitable_product_memberships(requester, source_policy)
 
     username = username.strip()
     email = email.strip()
+    User._meta.get_field("username").clean(username, None)
+    User._meta.get_field("email").clean(email, None)
     if User.objects.filter(username__iexact=username).exists() or User.objects.filter(
         email__iexact=email,
     ).exists():
@@ -274,9 +271,18 @@ def create_invited_user(
         # group. Remove that membership only for this freshly created account.
         _remove_new_user_default_group(user)
         Dojo_Group_Member.objects.create(
-            group=target_policy.group,
+            group=source_policy.group,
             user=user,
             role=requester_membership.role,
+        )
+        for membership in inherited_memberships:
+            Product_Member.objects.create(
+                product=membership.product,
+                user=user,
+                role=membership.role,
+            )
+        _validate_new_account_scope(
+            user, source_policy, inherited_memberships, requester_membership.role_id,
         )
     except IntegrityError as exc:
         raise ValidationError(GENERIC_ACCOUNT_ERROR) from exc

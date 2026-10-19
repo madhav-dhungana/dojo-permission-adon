@@ -1,13 +1,10 @@
 """User selectors and native API/admin paths must respect product boundaries."""
 
-from datetime import date
-
 from crum import impersonate
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Permission
 from django.test import RequestFactory, TestCase
 from django.urls import reverse
-from django.utils import timezone
 
 from dojo.api_v2.serializers import DojoGroupSerializer, FindingSerializer
 from dojo.filters import FindingFilter
@@ -15,58 +12,31 @@ from dojo.forms import FindingForm
 from dojo.models import (
     Dojo_Group,
     Dojo_Group_Member,
-    Engagement,
     Finding,
     Global_Role,
-    Product,
-    Product_Type,
+    Product_Group,
+    Product_Member,
+    Product_Type_Group,
     Product_Type_Member,
-    Role,
-    SLA_Configuration,
-    Test,
-    Test_Type,
 )
 from dojo.authorization.authorization import user_has_permission
 from dojo.authorization.roles_permissions import Permissions, Roles
 from dojo_permission.models import RestrictedGroupPolicy
 from dojo_permission.privacy import install_privacy_overlay, visible_user_ids
+from dojo_permission.tests.fixtures import SingleGroupFixture
 
 User = get_user_model()
 
 
-class ProductPrivacyTests(TestCase):
+class ProductPrivacyTests(SingleGroupFixture, TestCase):
     def setUp(self):
         install_privacy_overlay()
-        self.role = Role.objects.get(pk=Roles.Reader)
-        self.a = Product.objects.create(
-            name="Privacy product A", description="A",
-            prod_type=Product_Type.objects.create(name="Privacy type A"),
-            sla_configuration=SLA_Configuration.objects.first(),
-        )
-        self.b = Product.objects.create(
-            name="Privacy product B", description="B",
-            prod_type=Product_Type.objects.create(name="Privacy type B"),
-            sla_configuration=SLA_Configuration.objects.first(),
-        )
-        self.policy = RestrictedGroupPolicy.objects.get(product=self.a)
-        self.other_policy = RestrictedGroupPolicy.objects.get(product=self.b)
-        self.actor = User.objects.create_user(username="privacy-actor", email="actor@example.test")
-        self.peer_a = User.objects.create_user(username="same-product-a", email="same-a@example.test")
-        self.peer_b = User.objects.create_user(username="private-product-b", email="private-b@example.test")
-        for user, policy in ((self.actor, self.policy), (self.actor, self.other_policy), (self.peer_a, self.policy), (self.peer_b, self.other_policy)):
-            Dojo_Group_Member.objects.create(group=policy.group, user=user, role=self.role)
-        self.engagement = Engagement.objects.create(
-            name="Privacy engagement A", product=self.a,
-            target_start=date.today(), target_end=date.today(),
-        )
-        self.test = Test.objects.create(
-            engagement=self.engagement, test_type=Test_Type.objects.first(),
-            target_start=timezone.now(), target_end=timezone.now(),
-        )
-        self.finding = Finding.objects.create(
-            title="Privacy finding A", test=self.test, severity="Low", reporter=self.actor,
-        )
-        self.client.force_login(self.actor)
+        self.build_fixture()
+        self.role = self.reader
+        self.actor = self.user
+        self.peer_a = self.account("same-product-a", self.a)
+        self.peer_b = self.foreign
+        Product_Member.objects.create(product=self.b, user=self.actor, role=self.writer)
 
     def request(self):
         request = RequestFactory().patch(f"/api/v2/findings/{self.finding.pk}/")
@@ -74,19 +44,41 @@ class ProductPrivacyTests(TestCase):
         return request
 
     def only_product_a(self):
-        Dojo_Group_Member.objects.filter(group=self.other_policy.group, user=self.actor).delete()
+        Product_Member.objects.filter(product=self.b, user=self.actor).delete()
 
     def test_explicit_product_visibility_is_narrower_than_all_authorized_products(self):
         self.assertIn(self.peer_b.pk, visible_user_ids(self.actor))
         self.assertIn(self.peer_a.pk, visible_user_ids(self.actor, self.a))
         self.assertNotIn(self.peer_b.pk, visible_user_ids(self.actor, self.a))
 
-    def test_scoped_group_owner_exemption_wins_over_the_default_marker(self):
-        marker = Dojo_Group.objects.get(name="Dev Team group")
-        Dojo_Group_Member.objects.create(group=marker, user=self.actor, role=self.role)
-        Dojo_Group_Member.objects.filter(group=self.policy.group, user=self.actor).update(role_id=Roles.Owner)
-        self.assertTrue(user_has_permission(self.actor, self.a, Permissions.Engagement_Edit))
+    def test_shared_scope_privacy_ignores_broader_global_and_unrelated_group_grants(self):
+        Global_Role.objects.create(user=self.actor, role_id=Roles.Writer)
+        other = Dojo_Group.objects.create(name="Broader unrelated privacy grant")
+        Dojo_Group_Member.objects.create(group=other, user=self.actor, role_id=Roles.Owner)
+        Product_Group.objects.create(group=other, product=self.c, role_id=Roles.Maintainer)
+        Product_Type_Group.objects.create(group=other, product_type=self.c.prod_type, role_id=Roles.Owner)
+        self.assertNotIn(self.third.pk, visible_user_ids(self.actor))
+        self.assertFalse(user_has_permission(self.actor, self.c, Permissions.Product_View))
+        self.assertIn(self.client.get(f"/api/v2/products/{self.c.pk}/").status_code, (403, 404))
+        for endpoint, hidden_pk in (
+            ("products", self.c.pk), ("engagements", self.third_engagement.pk),
+            ("findings", self.third_finding.pk),
+        ):
+            response = self.client.get(f"/api/v2/{endpoint}/")
+            self.assertEqual(response.status_code, 200)
+            self.assertNotIn(hidden_pk, {row["id"] for row in response.json()["results"]})
+        with impersonate(self.actor):
+            form = FindingFilter({}, queryset=Finding.objects.all(), user=self.actor).form
+        self.assertNotIn(self.third.pk, form.fields["reporter"].queryset.values_list("pk", flat=True))
+
+    def test_legacy_group_owner_does_not_override_the_strict_shared_scope(self):
+        legacy = self.legacy_policy(self.a)
+        Dojo_Group_Member.objects.create(group=legacy.group, user=self.actor, role_id=Roles.Owner)
+        self.assertFalse(user_has_permission(self.actor, self.a, Permissions.Engagement_Edit))
         self.assertFalse(user_has_permission(self.actor, self.b, Permissions.Engagement_Edit))
+        Dojo_Group_Member.objects.filter(user=self.actor, group=self.policy.group).delete()
+        self.assertTrue(user_has_permission(self.actor, self.a, Permissions.Engagement_Edit))
+        self.assertTrue(user_has_permission(self.actor, self.b, Permissions.Engagement_Edit))
 
     def test_native_finding_form_uses_the_finding_product(self):
         with impersonate(self.actor):
@@ -147,8 +139,6 @@ class ProductPrivacyTests(TestCase):
     def test_shared_marker_serializer_does_not_include_foreign_user_ids(self):
         self.only_product_a()
         marker = Dojo_Group.objects.get(name="Dev Team group")
-        for user in (self.actor, self.peer_b):
-            Dojo_Group_Member.objects.create(group=marker, user=user, role=self.role)
         request = self.request()
         result = DojoGroupSerializer(marker, context={"request": request}).data
         self.assertIn(self.actor.pk, result["users"])
@@ -157,8 +147,7 @@ class ProductPrivacyTests(TestCase):
     def test_shared_marker_member_api_does_not_list_or_retrieve_foreign_enrollment(self):
         self.only_product_a()
         marker = Dojo_Group.objects.get(name="Dev Team group")
-        Dojo_Group_Member.objects.create(group=marker, user=self.actor, role=self.role)
-        foreign = Dojo_Group_Member.objects.create(group=marker, user=self.peer_b, role=self.role)
+        foreign = Dojo_Group_Member.objects.get(group=marker, user=self.peer_b)
         response = self.client.get("/api/v2/dojo_group_members/", {"group_id": marker.pk})
         self.assertEqual(response.status_code, 200)
         self.assertNotIn(self.peer_b.pk, [item["user"] for item in response.json()["results"]])
@@ -188,6 +177,8 @@ class ProductPrivacyTests(TestCase):
                          product_type_name=self.b.prod_type.name, error_message="An import target is required")
         self.assertFalse(permissions.check_auto_create_permission(**arguments))
         Product_Type_Member.objects.create(product_type=self.b.prod_type, user=self.actor, role_id=Roles.Owner)
+        self.assertFalse(permissions.check_auto_create_permission(**arguments))
+        Dojo_Group_Member.objects.filter(user=self.actor, group=self.policy.group).delete()
         self.assertTrue(permissions.check_auto_create_permission(**arguments))
 
     def test_superuser_keeps_native_user_selector_scope(self):

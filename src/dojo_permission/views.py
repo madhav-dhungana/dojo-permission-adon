@@ -5,17 +5,13 @@ from django.db import transaction
 from django.shortcuts import get_object_or_404, redirect, render
 from django.views.decorators.http import require_GET
 
-from dojo.authorization.roles_permissions import Permissions
-from dojo.models import Product
-from dojo.product.queries import get_authorized_products
-
 from dojo_permission.forms import NewUserInvitationForm
 from dojo_permission.models import RestrictedGroupPolicy
 from dojo_permission.services import (
     InvitationEmailError,
     create_invited_user,
     invitation_policies_for_user,
-    policy_product,
+    invitable_product_memberships,
     requester_policy_membership,
     send_password_invitation,
 )
@@ -33,19 +29,7 @@ def invitation_entry(request):
             policy_id=policies[0].pk,
         )
 
-    scopes = tuple(
-        {
-            "policy": policy,
-            "product": policy_product(policy),
-            "role": requester_policy_membership(request.user, policy).role,
-        }
-        for policy in policies
-    )
-    return render(
-        request,
-        "dojo_permission/select_invitation_scope.html",
-        {"scopes": scopes},
-    )
+    raise PermissionDenied
 
 
 @transaction.non_atomic_requests
@@ -61,21 +45,18 @@ def manage_policy_members(request, policy_id):
         is_active=True,
     )
     requester_policy_membership(request.user, policy)
-    fixed_product = policy_product(policy)
-    product_queryset = (
-        Product.objects.none()
-        if fixed_product is not None
-        else get_authorized_products(Permissions.Finding_Edit, user=request.user)
-    )
-
-    form_kwargs = {
-        "prefix": "invite",
-        "product_queryset": product_queryset,
-        "fixed_product": fixed_product,
-    }
+    product_memberships = invitable_product_memberships(request.user, policy)
+    form_kwargs = {"prefix": "invite"}
     invitation_form = NewUserInvitationForm(**form_kwargs)
 
     if request.method == "POST" and request.POST.get("action") != "invite_new":
+        raise PermissionDenied
+
+    allowed_fields = {
+        "csrfmiddlewaretoken", "action", "invite-username", "invite-email",
+        "invite-first_name", "invite-last_name", "invite-authentication_method",
+    }
+    if request.method == "POST" and set(request.POST).difference(allowed_fields):
         raise PermissionDenied
 
     if request.method == "POST" and request.POST.get("action") == "invite_new":
@@ -85,7 +66,6 @@ def manage_policy_members(request, policy_id):
                 user = create_invited_user(
                     requester=request.user,
                     policy=policy,
-                    product=invitation_form.cleaned_data["product"],
                     username=invitation_form.cleaned_data["username"],
                     email=invitation_form.cleaned_data["email"],
                     first_name=invitation_form.cleaned_data["first_name"],
@@ -103,7 +83,7 @@ def manage_policy_members(request, policy_id):
                     except InvitationEmailError:
                         messages.warning(
                             request,
-                            "The account and restricted product membership were created, "
+                            "The account and inherited product memberships were created, "
                             "but the setup email could not be sent.",
                         )
                     else:
@@ -126,7 +106,7 @@ def manage_policy_members(request, policy_id):
         "dojo_permission/manage_policy_members.html",
         {
             "policy": policy,
-            "fixed_product": fixed_product,
+            "product_memberships": product_memberships,
             "invitation_form": invitation_form,
         },
     )

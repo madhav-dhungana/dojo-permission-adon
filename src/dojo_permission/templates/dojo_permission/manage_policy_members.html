@@ -12,13 +12,12 @@
           <strong>{% trans "Add or Invite your Team Member" %}</strong>
         </div>
         <div class="panel-body">
-          {% if fixed_product %}
-            <p>
-              {% blocktrans with product=fixed_product %}The new account will receive restricted access to {{ product }} only.{% endblocktrans %}
-            </p>
-          {% else %}
-            <p>{% trans "Choose one product where you can already edit findings. The new account will receive restricted access to that product only." %}</p>
-          {% endif %}
+          <p>{% trans "The new team member will join your Dev Team group and inherit all your assigned products, with the same product roles and restrictions." %}</p>
+          <ul>
+            {% for membership in product_memberships %}
+              <li>{{ membership.product }} — {{ membership.role }}</li>
+            {% endfor %}
+          </ul>
           <p>{% trans "Existing accounts can only be assigned by an administrator." %}</p>
           <form class="form-horizontal" method="post">
             {% csrf_token %}

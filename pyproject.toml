@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dojo-permission"
-version = "0.2.0"
+version = "0.3.0"
 description = "Restricted Writer-style permission layer for DefectDojo 2.58.3"
 readme = "README.md"
 requires-python = ">=3.13,<3.14"

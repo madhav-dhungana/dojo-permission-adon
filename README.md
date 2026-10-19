@@ -3,14 +3,18 @@
 A standalone authorization extension for customized DefectDojo **2.58.3**
 release-mode deployments.
 
-The library provisions restricted groups without changing DefectDojo's core
-role tables or redefining the global Writer role. Reader, Writer, and
+The library provisions one shared **Dev Team group** without changing
+DefectDojo's core role tables or redefining the global Writer role. Reader, Writer, and
 Maintainer members retain their native existing-finding access but cannot
 create, edit, copy, or delete engagements; create tests or findings; import or
 re-import scans; copy or delete findings; or manage product access. Restricted
-members can add or invite a new email/SSO team member into one selected product
-from **User Menu → Add or Invite your Team Member**.
-Administrators assign existing accounts to the appropriate managed group.
+members can add or invite a new email/SSO team member with all their assigned
+products from **User Menu → Add or Invite your Team Member**
+(`/dojo-permission/accounts/create/`). Each new account receives membership in
+that shared group and individual product assignments with the inviter's same roles.
+Administrators add existing accounts to **Dev Team group** and assign each user
+appropriate native roles under each intended product's members. Do not assign
+products to the shared group.
 Restricted-group Owners and superusers keep their native permissions.
 
 See the
@@ -152,7 +156,7 @@ The Without Signing Certificate run ends with output like:
 ```text
 Local staging is ready
 DefectDojo:       2.58.3
-Dojo Permission: 0.2.0
+Dojo Permission: 0.3.0
 Image source:     build
 URL:              http://127.0.0.1:18080/login
 Admin username:   admin
@@ -242,7 +246,7 @@ image. A brief application outage is required.
 After installation, use the generated `compose.sh` command printed by the
 installer for future Compose operations; it includes the library override and
 the deployment's interpolation settings. After `git pull --ff-only`, rerun
-the same installer to update a managed 0.1.0 or 0.2.0 installation. An already
+the same installer to update a managed 0.1.0, 0.2.0, or 0.3.0 installation. An already
 healthy installation at the same version and source revision needs no restart.
 
 Follow the

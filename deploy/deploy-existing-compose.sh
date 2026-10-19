@@ -66,7 +66,7 @@ Optional:
   --no-proxy-restart            do not restart the unchanged proxy container
   --library-only                apply only dojo_permission migrations; do not
                                 run the deployment's full initializer
-  --managed-upgrade             update a verified managed 0.1.0/0.2.0 release;
+  --managed-upgrade             update a verified managed 0.1.0/0.2.0/0.3.0 release;
                                 requires --library-only
   --apply                       perform migration and cutover
   -h, --help
@@ -337,7 +337,7 @@ if not images[0] or len(set(images)) != 1:
 print(images[0])
 ' "$WEB_SERVICE" "$INITIALIZER_SERVICE" "$WORKER_SERVICE" "$BEAT_SERVICE")"
     [[ "$(docker image inspect "$MANAGED_RELEASE_IMAGE" --format '{{.Id}}')" == "$CURRENT_WEB_IMAGE_ID" ]] || die "The managed release does not match the current application image"
-    "${COMPOSE[@]}" exec -T "$WEB_SERVICE" python -c 'import importlib.metadata as metadata; assert metadata.version("dojo-permission") in {"0.1.0", "0.2.0"}, "Unsupported installed library version"'
+    "${COMPOSE[@]}" exec -T "$WEB_SERVICE" python -c 'import importlib.metadata as metadata; assert metadata.version("dojo-permission") in {"0.1.0", "0.2.0", "0.3.0"}, "Unsupported installed library version"'
     ROLLBACK_ENABLED="true"
 fi
 
@@ -497,7 +497,7 @@ DERIVED_IMAGE_ID="$(docker image inspect "$DERIVED_IMAGE" --format '{{.Id}}')"
 [[ "$DERIVED_IMAGE_ID" != "$EXPECTED_ROLLBACK_ID" ]] || die "Derived and rollback images resolve to the same image ID"
 
 docker run --rm --entrypoint python "$DERIVED_IMAGE" -c \
-    "import dojo, django, importlib.metadata as metadata; assert dojo.__version__ == '2.58.3'; assert django.get_version() == '5.2.14'; assert metadata.version('dojo-permission') == '0.2.0'"
+    "import dojo, django, importlib.metadata as metadata; assert dojo.__version__ == '2.58.3'; assert django.get_version() == '5.2.14'; assert metadata.version('dojo-permission') == '0.3.0'"
 docker run --rm --entrypoint python "$DERIVED_IMAGE" -m pip check
 
 cp -p "$SETTINGS_FILE" "$SETTINGS_BACKUP"

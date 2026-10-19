@@ -21,7 +21,7 @@ replace the existing nginx image, volumes, secrets, entrypoints, or settings
 mounts. The proxy container may restart after web cutover so it can resolve the
 recreated web container, but its image remains unchanged.
 
-For a managed 0.1.0/0.2.0 installation, update the library checkout and rerun
+For a managed 0.1.0/0.2.0/0.3.0 installation, update the library checkout and rerun
 `bash deploy/install-existing.sh`; it retains the previous enabled image for
 rollback. The explicit first-install commands below reject already-enabled
 deployments. Kubernetes, Swarm, multiple hosts, and replicated web/worker/beat
@@ -104,7 +104,7 @@ umask 077
 
 DD_LIBRARY_ROOT="/opt/dojo-permission-adon"
 DD_PERMISSION_COMMIT="$(git -C "$DD_LIBRARY_ROOT" rev-parse HEAD)"
-DD_RELEASE_ID="0.2.0-${DD_PERMISSION_COMMIT:0:12}-$(date -u +%Y%m%dT%H%M%SZ)"
+DD_RELEASE_ID="0.3.0-${DD_PERMISSION_COMMIT:0:12}-$(date -u +%Y%m%dT%H%M%SZ)"
 
 DD_DEPLOYMENT_ROOT="/opt/defectdojo"
 DD_COMPOSE_FILE="$DD_DEPLOYMENT_ROOT/docker-compose.yml"
@@ -253,7 +253,7 @@ git clone https://github.com/madhav-dhungana/dojo-permission-adon.git
 cd dojo-permission-adon
 git checkout "$DD_PERMISSION_COMMIT"
 test -z "$(git status --porcelain)"
-DD_RELEASE_ID="0.2.0-${DD_PERMISSION_COMMIT:0:12}-$(date -u +%Y%m%dT%H%M%SZ)"
+DD_RELEASE_ID="0.3.0-${DD_PERMISSION_COMMIT:0:12}-$(date -u +%Y%m%dT%H%M%SZ)"
 ```
 
 Set the exact values recorded on the deployment host. Authenticate using the
@@ -418,17 +418,24 @@ migrations, or builds an inherited Compose `build:` definition.
 
 ## 6. Configure a restricted group
 
-Installation provisions **Dev Team group** and one managed group named
-**Dev Team group - Product `<id>`** for each product automatically. No checkbox
-or provisioning command is needed.
-An administrator assigns existing accounts through normal group administration:
-the default group restricts existing native access without granting product
-access, while a product group grants restricted access to exactly that product.
-Keep managed product-group assignments unchanged.
+Installation provisions one shared **Dev Team group** automatically. An
+administrator adds existing accounts through normal group administration and
+assigns the appropriate native role to each individual user on each intended
+product. The shared group adds restrictions but grants no product access itself; do not
+attach products to it. No checkbox or provisioning command is needed.
 
 Eligible restricted members can add or invite a new email/SSO team member for
-one selected product. Existing-account assignments remain administrator-only.
+all their directly assigned products through
+**User Menu → Add or Invite your Team Member**. The account gets the same
+shared-group membership role and individual product roles, without a product
+selector or global role grant. Existing-account assignments remain administrator-only.
 Restricted-group Owners and superusers retain native permissions.
+
+Upgrades retire only empty, unchanged generated product groups. Nonempty or
+customized legacy groups remain for administrator migration.
+Existing shared-group product links must be normalized during backed-up
+maintenance into individual memberships with unchanged roles before upgrading;
+the installer does not silently migrate access grants.
 
 ## 7. Validate the installation
 
@@ -467,13 +474,14 @@ unset DD_SERVICE DD_CONTAINER_ID
 Complete these browser checks:
 
 1. A superuser can view, create, and edit users and groups.
-2. Restricted Reader, Writer, and Maintainer members retain native finding
-   editing but cannot edit/copy engagements, create engagements/tests/findings,
+2. Restricted Reader, Writer, and Maintainer members retain their native finding
+   access but cannot edit/copy engagements, create engagements/tests/findings,
    import or re-import scans, copy/delete findings, or delete engagements.
-3. A restricted member can add or invite a new email/SSO team member for one
-   selected product; existing accounts can only be assigned by an administrator.
+3. A restricted member can add or invite a new email/SSO team member inheriting
+   all directly assigned products and the same roles; existing accounts can only
+   be assigned by an administrator.
 4. Restricted-group Owners and superusers retain native permissions.
-5. The managed groups retain their intended product scope and restricted
+5. The shared group grants no product access and restricted
    members cannot change product/group access or browse the global user list.
 
 Email invitations require working SMTP. SSO sign-in requires a configured

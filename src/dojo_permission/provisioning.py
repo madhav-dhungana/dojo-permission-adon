@@ -1,11 +1,12 @@
-"""Provision the library-owned restricted groups without broadening access."""
+"""Provision the library-owned restricted group without broadening access."""
 
-from functools import wraps
+from dataclasses import dataclass
 import logging
 
 from crum import get_current_user
+from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
-from django.db import DEFAULT_DB_ALIAS, connections, router, transaction
+from django.db import connections, transaction
 from django.db.models.signals import post_migrate, post_save
 
 # Importing this module registers DefectDojo's Dojo_Group lifecycle receivers.
@@ -18,7 +19,7 @@ from dojo.models import (
     Product,
     Product_Group,
     Product_Type_Group,
-    Role,
+    System_Settings,
 )
 
 from dojo_permission.models import RestrictedGroupPolicy
@@ -40,11 +41,31 @@ class ManagedGroupCollision(RuntimeError):
 
 
 class ProvisioningUnavailable(RuntimeError):
-    """DefectDojo's required role fixtures are not available yet."""
+    """A requested legacy managed product scope is not available."""
+
+
+@dataclass(frozen=True)
+class LegacyCleanupResult:
+    """Outcome of conservatively retiring obsolete product-bound groups."""
+
+    retired_group_ids: tuple[int, ...]
+    preserved_policy_ids: tuple[int, ...]
+
+    @property
+    def retired_count(self) -> int:
+        return len(self.retired_group_ids)
+
+    @property
+    def preserved_count(self) -> int:
+        return len(self.preserved_policy_ids)
 
 
 def managed_product_group_name(product: Product) -> str:
     return f"{DEFAULT_MANAGED_GROUP_NAME} - Product {product.pk}"
+
+
+def legacy_managed_product_group_name(product: Product) -> str:
+    return f"{LEGACY_MANAGED_GROUP_NAME} - Product {product.pk}"
 
 
 def managed_product_group_description(product: Product) -> str:
@@ -185,93 +206,154 @@ def ensure_default_managed_group() -> RestrictedGroupPolicy:
     return _activate_managed_policy(policy)
 
 
-def _writer_role() -> Role:
-    try:
-        return Role.objects.get(pk=Roles.Writer)
-    except Role.DoesNotExist as exc:
-        raise ProvisioningUnavailable(
-            "DefectDojo's Writer role is not available yet.",
-        ) from exc
-
-
 @transaction.atomic
 def ensure_product_policy(product: Product) -> RestrictedGroupPolicy:
+    """Resolve and validate an existing legacy product-bound policy.
+
+    Version 0.3 intentionally provisions only the shared deny-only marker.
+    This resolver remains for callers that must work with a product-bound
+    policy created by an earlier release, but it never creates or repairs one.
+    """
+
     product = Product.objects.select_for_update().get(pk=product.pk)
-    writer = _writer_role()
-    group_name = managed_product_group_name(product)
     product_policy = (
         RestrictedGroupPolicy.objects.select_for_update(of=("self",))
         .filter(product=product)
         .first()
     )
     if product_policy is None:
-        group, group_created = _managed_group(
-            name=group_name,
-            description=managed_product_group_description(product),
+        raise ProvisioningUnavailable(
+            f"No legacy product-bound restricted policy exists for product {product.pk}.",
         )
-    else:
-        group = Dojo_Group.objects.select_for_update().get(pk=product_policy.group_id)
-        if Dojo_Group.objects.filter(name=group_name).exclude(pk=group.pk).exists():
-            raise ManagedGroupCollision(
-                f"Managed group identity {group_name!r} is occupied by another group.",
-            )
-        # The product foreign key is the durable ownership marker. Native
-        # administrators may rename this already-owned group without causing a
-        # replacement group to be created on the next reconciliation.
-        _validate_managed_group(group, display_name=group.name)
-        _rename_legacy_managed_group(
-            group,
-            legacy_name=f"{LEGACY_MANAGED_GROUP_NAME} - Product {product.pk}",
-            new_name=group_name,
-        )
-
-    group_policy = (
-        RestrictedGroupPolicy.objects.select_for_update(of=("self",))
-        .filter(group=group)
-        .first()
-    )
-    if product_policy is None and not group_created and group_policy is None:
+    group = Dojo_Group.objects.select_for_update().get(pk=product_policy.group_id)
+    _validate_managed_group(group, display_name=group.name)
+    if product_policy.is_default:
         raise ManagedGroupCollision(
-            f"Refusing to adopt pre-existing DefectDojo group {group_name!r}.",
+            f"Product {product.pk} policy is marked as the default policy.",
         )
-    if product_policy is not None and product_policy.group_id != group.id:
-        raise ManagedGroupCollision(
-            f"Product {product.pk} already has a different restricted policy.",
-        )
-    if group_policy is not None and group_policy.product_id != product.pk:
-        raise ManagedGroupCollision(
-            f"Managed group {group_name!r} belongs to a different policy scope.",
-        )
-    if (product_policy is not None and product_policy.is_default) or (
-        group_policy is not None and group_policy.is_default
-    ):
-        raise ManagedGroupCollision(
-            f"Managed group {group_name!r} is marked as the default policy.",
-        )
-
-    policy = product_policy or group_policy
-    if policy is None:
-        policy = RestrictedGroupPolicy.objects.create(group=group, product=product)
-    policy = _activate_managed_policy(policy)
 
     assignments = list(Product_Group.objects.select_for_update().filter(group=group))
-    if not assignments:
-        Product_Group.objects.create(product=product, group=group, role=writer)
-    elif len(assignments) != 1 or assignments[0].product_id != product.pk or assignments[0].role_id != Roles.Writer:
+    if (
+        len(assignments) != 1
+        or assignments[0].product_id != product.pk
+        or assignments[0].role_id != Roles.Writer
+    ):
         raise ManagedGroupCollision(
-            f"Managed group {group_name!r} does not have exactly one Writer product assignment.",
+            f"Legacy product policy {product_policy.pk} does not have exactly one "
+            "Writer assignment for its product.",
         )
-    return policy
+    return product_policy
+
+
+def _legacy_product_policy_blockers(
+    policy: RestrictedGroupPolicy,
+    group: Dojo_Group,
+) -> list[str]:
+    """Return every reason a legacy group cannot be safely retired."""
+
+    product = policy.product
+    blockers = []
+    if policy.is_default:
+        blockers.append("policy is marked as the default")
+    if not policy.is_active:
+        blockers.append("policy is inactive")
+    if policy.created_by_id is not None:
+        blockers.append("policy has an explicit creator")
+    if group.name not in {
+        managed_product_group_name(product),
+        legacy_managed_product_group_name(product),
+    }:
+        blockers.append("group name is not a generated product-group name")
+    if group.description != managed_product_group_description(product):
+        blockers.append("group description is not the generated description")
+    if group.social_provider:
+        blockers.append("group uses a social provider")
+    if group.auth_group_id is None:
+        blockers.append("group has no authorization group")
+    else:
+        if group.auth_group.permissions.exists():
+            blockers.append("authorization group has configuration permissions")
+        if group.auth_group.user_set.exists():
+            blockers.append("authorization group has users")
+    if Dojo_Group_Member.objects.filter(group=group).exists():
+        blockers.append("group has members")
+    if Global_Role.objects.filter(group=group, role__isnull=False).exists():
+        blockers.append("group has a global role")
+    if Product_Type_Group.objects.filter(group=group).exists():
+        blockers.append("group has a product-type assignment")
+    if System_Settings.objects.filter(default_group=group).exists():
+        blockers.append("group is configured as the system default group")
+
+    assignments = list(Product_Group.objects.select_for_update().filter(group=group))
+    if (
+        len(assignments) != 1
+        or assignments[0].product_id != product.pk
+        or assignments[0].role_id != Roles.Writer
+    ):
+        blockers.append("group does not have exactly one Writer assignment for its product")
+    return blockers
+
+
+@transaction.atomic
+def retire_empty_generated_product_policies() -> LegacyCleanupResult:
+    """Delete only untouched, empty product groups generated by older releases."""
+
+    retired_group_ids = []
+    preserved_policy_ids = []
+    policies = (
+        RestrictedGroupPolicy.objects.select_for_update(of=("self",))
+        .filter(product__isnull=False)
+        .select_related("product")
+        .order_by("pk")
+    )
+    for policy in policies:
+        group = Dojo_Group.objects.select_for_update().get(pk=policy.group_id)
+        if group.auth_group_id is not None:
+            # Lock the authorization row as well as the Dojo group before the
+            # empty-membership checks and delete.
+            group.auth_group = Group.objects.select_for_update().get(
+                pk=group.auth_group_id,
+            )
+        blockers = _legacy_product_policy_blockers(policy, group)
+        if blockers:
+            preserved_policy_ids.append(policy.pk)
+            logger.warning(
+                "Preserving legacy dojo-permission product policy %s (group %s): %s.",
+                policy.pk,
+                group.pk,
+                "; ".join(blockers),
+            )
+            continue
+
+        group_id = group.pk
+        group.delete()
+        retired_group_ids.append(group_id)
+        logger.info(
+            "Retired empty legacy dojo-permission product group %s for product %s.",
+            group_id,
+            policy.product_id,
+        )
+
+    return LegacyCleanupResult(
+        retired_group_ids=tuple(retired_group_ids),
+        preserved_policy_ids=tuple(preserved_policy_ids),
+    )
+
+
+@transaction.atomic
+def reconcile_managed_groups() -> tuple[RestrictedGroupPolicy, LegacyCleanupResult]:
+    """Ensure the shared marker and retire only safe obsolete product groups."""
+
+    default_policy = ensure_default_managed_group()
+    cleanup = retire_empty_generated_product_policies()
+    return default_policy, cleanup
 
 
 def provision_existing_products() -> tuple[RestrictedGroupPolicy, ...]:
-    ensure_default_managed_group()
-    if not Role.objects.filter(pk=Roles.Writer).exists():
-        logger.warning(
-            "Skipping product-bound dojo-permission provisioning until the Writer role exists.",
-        )
-        return ()
-    return tuple(ensure_product_policy(product) for product in Product.objects.all().iterator())
+    """Compatibility shim: reconcile the single marker and create no products."""
+
+    reconcile_managed_groups()
+    return ()
 
 
 def _post_migrate_provision(*, using, **kwargs) -> None:
@@ -289,9 +371,10 @@ def _post_migrate_provision(*, using, **kwargs) -> None:
         Product._meta.db_table,
         Product_Group._meta.db_table,
         Product_Type_Group._meta.db_table,
-        Role._meta.db_table,
+        System_Settings._meta.db_table,
         Group._meta.db_table,
         Group.permissions.through._meta.db_table,
+        get_user_model().groups.through._meta.db_table,
     }
     existing_tables = set(connections[using].introspection.table_names())
     if not required_tables.issubset(existing_tables):
@@ -299,57 +382,40 @@ def _post_migrate_provision(*, using, **kwargs) -> None:
             "Skipping dojo-permission provisioning because its required tables are unavailable.",
         )
         return
-    provision_existing_products()
-
-
-def _product_post_save(*, instance: Product, raw: bool, using: str, **kwargs) -> None:
-    if raw or using != "default":
-        return
-    try:
-        ensure_product_policy(instance)
-    except ProvisioningUnavailable:
+    with connections[using].cursor() as cursor:
+        policy_columns = {
+            column.name
+            for column in connections[using].introspection.get_table_description(
+                cursor,
+                RestrictedGroupPolicy._meta.db_table,
+            )
+        }
+    required_policy_columns = {
+        "id",
+        "group_id",
+        "product_id",
+        "is_default",
+        "is_active",
+        "created_by_id",
+    }
+    if not required_policy_columns.issubset(policy_columns):
         logger.warning(
-            "Product %s was not provisioned because the Writer role is unavailable.",
-            instance.pk,
+            "Skipping dojo-permission provisioning because its policy schema is incomplete.",
         )
-
-
-def _install_atomic_product_save() -> None:
-    current_save = Product.save
-    if getattr(current_save, "_dojo_permission_atomic_provisioning", False):
         return
-
-    @wraps(current_save)
-    def atomic_product_save(instance, *args, **kwargs):
-        using = (
-            kwargs.get("using")
-            or router.db_for_write(type(instance), instance=instance)
-            or instance._state.db
-            or DEFAULT_DB_ALIAS
-        )
-        if using != DEFAULT_DB_ALIAS:
-            return current_save(instance, *args, **kwargs)
-        # Product post-save provisioning now participates in the same database
-        # transaction as the core Product INSERT/UPDATE. A collision therefore
-        # cannot leave a newly created Product without its managed policy.
-        with transaction.atomic(using=using):
-            return current_save(instance, *args, **kwargs)
-
-    atomic_product_save._dojo_permission_atomic_provisioning = True
-    Product.save = atomic_product_save
+    reconcile_managed_groups()
 
 
 def register_provisioning_signals(app_config) -> None:
-    _install_atomic_product_save()
+    # Disconnect the pre-0.3 receiver if an unusual test/reload process loaded
+    # both implementations. New processes never connect a Product receiver.
+    post_save.disconnect(
+        sender=Product,
+        dispatch_uid="dojo_permission.provision_product",
+    )
     post_migrate.connect(
         _post_migrate_provision,
         sender=app_config,
         dispatch_uid="dojo_permission.provision_after_migrate",
-        weak=False,
-    )
-    post_save.connect(
-        _product_post_save,
-        sender=Product,
-        dispatch_uid="dojo_permission.provision_product",
         weak=False,
     )

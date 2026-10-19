@@ -27,7 +27,7 @@ registries, and host curl must trust the URL used for the health check. Set
 `CURL_CA_BUNDLE` in the installer configuration when your host requires a
 separate CA bundle.
 
-The same command installs a new library or updates a managed 0.1.0/0.2.0
+The same command installs a new library or updates a managed 0.1.0/0.2.0/0.3.0
 installation. An enabled deployment from another installation method requires
 a reviewed conversion to the managed configuration first. Multi-host or
 replicated deployments need their own cutover plan.
@@ -171,7 +171,7 @@ mappings, volume mounts, entrypoints, secrets, certificate settings, and the
 proxy image continue to come from your original Compose configuration.
 
 The installation applies the library-owned migrations and provisions the
-managed restricted groups. Existing user memberships are preserved. After
+shared **Dev Team group**. Existing user memberships are preserved. After
 `git pull --ff-only`, rerun the same command to update a managed installation;
 the previous enabled image remains available for rollback. At the same package
 version and source revision, rerunning only verifies the healthy deployment.
@@ -195,16 +195,29 @@ Use your configured web service name instead of `uwsgi` when it differs.
 `[X] 0002_product_bound_policies`. Continue to use the same
 DefectDojo URL and existing administrator credentials.
 
-As an administrator, assign existing accounts to **Dev Team group**
-to restrict their existing access, or to the appropriate managed product group
-for access to one product. The groups are created automatically; no checkbox
-is required. Reader, Writer, and Maintainer members receive the restriction;
+As an administrator, add existing accounts to **Dev Team group** and assign
+each user the appropriate native role directly under each intended product's
+members. Do not assign products to the shared group. No checkbox is required. Reader, Writer,
+and Maintainer group members receive the restriction;
 restricted-group Owners and superusers retain native permissions.
+
+Members use **User Menu → Add or Invite your Team Member**
+(`/dojo-permission/accounts/create/`) to invite a new account with all their
+directly assigned products. Each invite copies the same shared-group membership
+role and native product roles; there is no product selector or global role grant.
+
+An upgrade retires only empty, unchanged auto-generated product groups.
+Nonempty or customized legacy groups are preserved with a warning and require
+administrator migration of their members and individual product assignments.
+If products were attached to the shared group, first back up and normalize those
+grants into individual product memberships during maintenance, preserving roles,
+then remove the shared product links. The installer does not silently rewrite
+existing access grants.
 
 Verify in the browser that an administrator can still manage users and
 groups, a restricted member can edit an existing finding and invite a new
-account for one selected product, and blocked engagement edit/copy,
-create/delete/import, and access-management operations are denied. Email
+account inheriting all assigned products with unchanged roles, and blocked
+engagement edit/copy, create/delete/import, and access-management operations are denied. Email
 invitations require working SMTP; SSO requires the existing identity-provider
 configuration.
 

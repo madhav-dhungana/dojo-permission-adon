@@ -18,7 +18,9 @@ from dojo.models import (
 
 from dojo_permission.policy import (
     PRIVILEGED_ROLES,
+    directly_assigned_product_ids,
     is_restricted_user,
+    is_shared_restricted_user,
     product_for_object,
     restricted_membership_group_ids,
 )
@@ -70,6 +72,18 @@ def visible_user_ids(user, product=None) -> set[int]:
     User = get_user_model()
     if not is_restricted_user(user):
         return set(User.objects.values_list("pk", flat=True))
+    if is_shared_restricted_user(user):
+        product_ids = directly_assigned_product_ids(user)
+        if product is not None:
+            product_ids = product_ids.filter(product_id=product.pk)
+        ids = {user.pk}
+        ids.update(
+            Product_Member.objects.filter(
+                product_id__in=product_ids,
+            ).values_list("user_id", flat=True),
+        )
+        return ids
+
     from dojo.product.queries import get_authorized_products
 
     products = get_authorized_products(Permissions.Product_View, user=user)
@@ -148,7 +162,7 @@ def _install_user_query_wrappers(queries):
     @wraps(original)
     def scoped_users(permission, user=None):
         result = original(permission, user=user)
-        actor = get_current_user() or user
+        actor = user if user is not None else get_current_user()
         return result.filter(pk__in=visible_user_ids(actor, request_product())) if is_restricted_user(actor) else result
 
     replace_imported_references(original, scoped_users)
@@ -184,7 +198,20 @@ def _install_member_queries(module, name, *, groups=False, members=False, produc
         actor = get_current_user()
         if not is_restricted_user(actor):
             return result
-        product = args[0] if product_argument and args else None
+        if is_shared_restricted_user(actor):
+            model_name = getattr(getattr(result, "model", None), "_meta", None)
+            model_name = getattr(model_name, "model_name", None)
+            if model_name in {"product_member", "product_group"}:
+                result = result.filter(
+                    product_id__in=directly_assigned_product_ids(actor),
+                )
+            elif model_name in {"product_type_member", "product_type_group"}:
+                return result.none()
+        product = None
+        if product_argument:
+            product = kwargs.get("product")
+            if product is None and args:
+                product = args[0]
         if getattr(getattr(product, "_meta", None), "model_name", None) != "product":
             product = None
         if groups:
@@ -316,6 +343,8 @@ def install_privacy_overlay():
     @wraps(original_auto_create)
     def auto_create_permission(user, product, product_name, engagement, engagement_name, product_type, product_type_name, error_message):
         if product is None and is_restricted_user(user):
+            if is_shared_restricted_user(user):
+                return False
             independent = product_type is not None and (
                 Product_Type_Member.objects.filter(user=user, product_type=product_type, role_id__in=PRIVILEGED_ROLES).exists()
                 or Product_Type_Group.objects.filter(group__users=user, product_type=product_type, role_id__in=PRIVILEGED_ROLES).exclude(group_id__in=restricted_membership_group_ids(user)).exists()
