@@ -22,7 +22,7 @@ where = ["src"]
 exclude = ["dojo_permission.tests*"]
 
 [tool.setuptools.package-data]
-dojo_permission = ["templates/**/*.html"]
+dojo_permission = ["template_overrides/*.html", "templates/**/*.html"]
 
 [tool.pytest.ini_options]
 addopts = "-ra"

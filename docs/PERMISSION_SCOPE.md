@@ -59,7 +59,8 @@ A member may:
 - Create or invite a new DefectDojo account by email.
 - Invite a user who will authenticate through SSO.
 
-The requester selects one product they can already view. The new account joins
+The requester selects one product where they can already edit findings, so
+read-only product access cannot be delegated as Writer access. The new account joins
 only that product's managed restricted group and receives no global role or
 configuration permissions. An administrator must assign existing accounts;
 restricted members cannot browse or select arbitrary existing accounts.

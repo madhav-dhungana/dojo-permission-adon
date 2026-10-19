@@ -134,6 +134,44 @@ def requester_policy_membership(
 requester_writer_membership = requester_policy_membership
 
 
+def invitation_policies_for_user(user) -> tuple[RestrictedGroupPolicy, ...]:
+    """Return only policy scopes through which this user can really invite."""
+
+    if user is None or user.is_anonymous or user.is_superuser:
+        return ()
+    eligible_group_ids = Dojo_Group_Member.objects.filter(
+        user=user,
+        role_id__in=RESTRICTED_MEMBER_ROLES,
+        group__dojo_permission_policy__is_active=True,
+    ).values("group_id")
+    policies = (
+        RestrictedGroupPolicy.objects.filter(
+            is_active=True,
+            group_id__in=eligible_group_ids,
+        )
+        .select_related("group", "group__auth_group", "product")
+        .order_by("-is_default", "product__name", "group__name")
+    )
+
+    available = []
+    for policy in policies:
+        try:
+            requester_policy_membership(user, policy)
+            product = policy_product(policy)
+        except PermissionDenied:
+            continue
+        if product is None:
+            from dojo.product.queries import get_authorized_products
+
+            if not get_authorized_products(
+                Permissions.Finding_Edit,
+                user=user,
+            ).exists():
+                continue
+        available.append(policy)
+    return tuple(available)
+
+
 def add_existing_user_to_policy(
     *,
     requester,
@@ -160,7 +198,7 @@ def _selected_target_policy(
     if selected_product is None or not user_has_permission(
         requester,
         selected_product,
-        Permissions.Product_View,
+        Permissions.Finding_Edit,
     ):
         raise PermissionDenied
     try:

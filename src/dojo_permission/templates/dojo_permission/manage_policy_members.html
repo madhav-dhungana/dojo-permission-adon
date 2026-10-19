@@ -17,7 +17,7 @@
               {% blocktrans with product=fixed_product %}The new account will receive restricted access to {{ product }} only.{% endblocktrans %}
             </p>
           {% else %}
-            <p>{% trans "Choose one product you can already access. The new account will receive restricted access to that product only." %}</p>
+            <p>{% trans "Choose one product where you can already edit findings. The new account will receive restricted access to that product only." %}</p>
           {% endif %}
           <p>{% trans "Existing accounts can only be assigned by an administrator." %}</p>
           <form class="form-horizontal" method="post">

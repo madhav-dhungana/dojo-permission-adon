@@ -1,4 +1,10 @@
-from dojo_permission.integration import APP_CONFIG, MIDDLEWARE, ROOT_URLCONF, configure
+from dojo_permission.integration import (
+    APP_CONFIG,
+    MIDDLEWARE,
+    ROOT_URLCONF,
+    TEMPLATE_OVERRIDE_DIR,
+    configure,
+)
 
 
 def test_configure_is_additive_and_idempotent():
@@ -15,3 +21,20 @@ def test_configure_is_additive_and_idempotent():
     assert namespace["MIDDLEWARE"] == ["custom.middleware", MIDDLEWARE]
     assert namespace["DOJO_PERMISSION_PARENT_URLCONF"] == "custom.urls"
     assert namespace["ROOT_URLCONF"] == ROOT_URLCONF
+
+
+def test_configure_prepends_template_wrapper_once_and_preserves_custom_dirs():
+    namespace = {
+        "TEMPLATES": [
+            {
+                "BACKEND": "django.template.backends.django.DjangoTemplates",
+                "DIRS": ["/custom/templates"],
+            },
+        ],
+    }
+
+    configure(namespace)
+    configure(namespace)
+
+    directories = namespace["TEMPLATES"][0]["DIRS"]
+    assert directories == [TEMPLATE_OVERRIDE_DIR, "/custom/templates"]

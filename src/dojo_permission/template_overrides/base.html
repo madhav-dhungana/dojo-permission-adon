@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% load i18n dojo_permission_tags %}
+
+{% block settings-dropdown-items %}
+  {{ block.super }}
+  {% dojo_permission_can_invite request.user as can_invite_restricted_account %}
+  {% if can_invite_restricted_account %}
+    <li>
+      <a id="dojo-permission-create-account" href="{% url 'dojo_permission:invitation_entry' %}">
+        <i class="fa-solid fa-user-plus fa-fw"></i>
+        {% trans "Create restricted account" %}
+      </a>
+    </li>
+  {% endif %}
+{% endblock %}

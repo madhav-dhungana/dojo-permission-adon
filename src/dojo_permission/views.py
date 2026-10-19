@@ -3,6 +3,7 @@ from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.db import transaction
 from django.shortcuts import get_object_or_404, redirect, render
+from django.views.decorators.http import require_GET
 
 from dojo.authorization.roles_permissions import Permissions
 from dojo.models import Product
@@ -13,10 +14,38 @@ from dojo_permission.models import RestrictedGroupPolicy
 from dojo_permission.services import (
     InvitationEmailError,
     create_invited_user,
+    invitation_policies_for_user,
     policy_product,
     requester_policy_membership,
     send_password_invitation,
 )
+
+
+@login_required
+@require_GET
+def invitation_entry(request):
+    policies = invitation_policies_for_user(request.user)
+    if not policies:
+        raise PermissionDenied
+    if len(policies) == 1:
+        return redirect(
+            "dojo_permission:manage_policy_members",
+            policy_id=policies[0].pk,
+        )
+
+    scopes = tuple(
+        {
+            "policy": policy,
+            "product": policy_product(policy),
+            "role": requester_policy_membership(request.user, policy).role,
+        }
+        for policy in policies
+    )
+    return render(
+        request,
+        "dojo_permission/select_invitation_scope.html",
+        {"scopes": scopes},
+    )
 
 
 @transaction.non_atomic_requests
@@ -36,7 +65,7 @@ def manage_policy_members(request, policy_id):
     product_queryset = (
         Product.objects.none()
         if fixed_product is not None
-        else get_authorized_products(Permissions.Product_View, user=request.user)
+        else get_authorized_products(Permissions.Finding_Edit, user=request.user)
     )
 
     form_kwargs = {

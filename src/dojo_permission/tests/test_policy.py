@@ -185,6 +185,49 @@ class ManagedPolicyTests(TestCase):
         for text in ("Add an existing account", "existing-user", self.foreign.username, self.foreign.email):
             self.assertNotContains(response, text)
 
+    def test_native_user_menu_discovers_restricted_account_creation(self):
+        response = self.client.get(reverse("product"))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'id="dojo-permission-create-account"')
+        self.assertContains(response, reverse("dojo_permission:invitation_entry"))
+
+    def test_single_invitation_scope_redirects_to_its_form(self):
+        response = self.client.get(reverse("dojo_permission:invitation_entry"))
+        self.assertRedirects(
+            response,
+            reverse("dojo_permission:manage_policy_members", args=(self.policy.pk,)),
+            fetch_redirect_response=False,
+        )
+
+    def test_multiple_invitation_scopes_have_a_private_chooser(self):
+        Dojo_Group_Member.objects.create(
+            group=self.other_policy.group,
+            user=self.user,
+            role=self.writer,
+        )
+        response = self.client.get(reverse("dojo_permission:invitation_entry"))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(
+            response,
+            reverse("dojo_permission:manage_policy_members", args=(self.policy.pk,)),
+        )
+        self.assertContains(
+            response,
+            reverse("dojo_permission:manage_policy_members", args=(self.other_policy.pk,)),
+        )
+        self.assertNotContains(response, self.foreign.email)
+
+    def test_owner_does_not_get_restricted_invitation_menu_entry(self):
+        self.membership.role = self.owner
+        self.membership.save(update_fields=("role",))
+        response = self.client.get(reverse("product"))
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, 'id="dojo-permission-create-account"')
+        self.assertEqual(
+            self.client.get(reverse("dojo_permission:invitation_entry")).status_code,
+            403,
+        )
+
     def test_foreign_policy_page_and_service_are_denied(self):
         response = self.client.get(reverse("dojo_permission:manage_policy_members", args=(self.other_policy.pk,)))
         self.assertIn(response.status_code, (403, 404))
@@ -227,6 +270,45 @@ class ManagedPolicyTests(TestCase):
         Dojo_Group_Member.objects.create(group=marker.group, user=self.user, role=self.reader)
         with self.assertRaises(PermissionDenied):
             self.invite(policy=marker, product=self.b)
+
+    def test_marker_read_only_access_cannot_be_delegated_as_writer(self):
+        marker = RestrictedGroupPolicy.objects.get(is_default=True)
+        reader = User.objects.create_user(username="marker-reader", email="marker-reader@example.test")
+        Dojo_Group_Member.objects.create(group=marker.group, user=reader, role=self.reader)
+        Product_Member.objects.create(product=self.a, user=reader, role=self.reader)
+        self.assertTrue(user_has_permission(reader, self.a, Permissions.Product_View))
+        self.assertFalse(user_has_permission(reader, self.a, Permissions.Finding_Edit))
+        with self.assertRaises(PermissionDenied):
+            self.invite(requester=reader, policy=marker, product=self.a)
+        self.assertFalse(User.objects.filter(username="invited-new").exists())
+        self.client.force_login(reader)
+        self.assertEqual(self.client.get(reverse("dojo_permission:invitation_entry")).status_code, 403)
+
+    def test_marker_product_choices_exclude_read_only_products(self):
+        marker = RestrictedGroupPolicy.objects.get(is_default=True)
+        Dojo_Group_Member.objects.create(group=marker.group, user=self.user, role=self.reader)
+        Product_Member.objects.create(product=self.b, user=self.user, role=self.reader)
+        response = self.client.get(reverse("dojo_permission:manage_policy_members", args=(marker.pk,)))
+        self.assertEqual(response.status_code, 200)
+        choices = response.context["invitation_form"].fields["product"].queryset
+        self.assertEqual(list(choices.values_list("pk", flat=True)), [self.a.pk])
+        with self.assertRaises(PermissionDenied):
+            self.invite(policy=marker, product=self.b)
+
+    def test_marker_native_writer_can_invite_with_unchanged_group_role(self):
+        marker = RestrictedGroupPolicy.objects.get(is_default=True)
+        writer = User.objects.create_user(username="marker-writer", email="marker-writer@example.test")
+        Dojo_Group_Member.objects.create(group=marker.group, user=writer, role=self.reader)
+        Product_Member.objects.create(product=self.a, user=writer, role=self.writer)
+        target = self.invite(requester=writer, policy=marker, product=self.a)
+        self.assertEqual(list(Dojo_Group_Member.objects.filter(user=target).values_list("group_id", "role_id")), [(self.policy.group_id, self.reader.pk)])
+        self.assertTrue(user_has_permission(target, self.a, Permissions.Finding_Edit))
+        self.assertFalse(user_has_permission(target, self.b, Permissions.Product_View))
+
+    def test_navigation_tag_tolerates_missing_request_context(self):
+        from dojo_permission.templatetags.dojo_permission_tags import dojo_permission_can_invite
+        self.assertFalse(dojo_permission_can_invite(None))
+        self.assertFalse(dojo_permission_can_invite(""))
 
     def test_sso_creation_page_assigns_only_scoped_membership(self):
         response = self.client.post(reverse("dojo_permission:manage_policy_members", args=(self.policy.pk,)), {
