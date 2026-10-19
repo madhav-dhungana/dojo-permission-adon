@@ -84,6 +84,59 @@ class ManagedPolicyTests(TestCase):
         self.assertEqual(ensure_default_managed_group().pk, marker.pk)
         self.assertEqual(ensure_product_policy(self.a).pk, self.policy.pk)
 
+    def test_upgrade_renames_generated_labels_without_changing_access(self):
+        from dojo_permission.provisioning import ensure_default_managed_group, provision_existing_products
+        marker = ensure_default_managed_group()
+        marker.group.name = "Restricted Finding Editors"
+        marker.group.save(update_fields=("name",))
+        self.policy.group.name = f"Restricted Finding Editors - Product {self.a.pk}"
+        self.policy.group.save(update_fields=("name",))
+        before = (
+            list(Dojo_Group_Member.objects.values_list("pk", "group_id", "user_id", "role_id").order_by("pk")),
+            list(Product_Group.objects.values_list("pk", "group_id", "product_id", "role_id").order_by("pk")),
+            list(RestrictedGroupPolicy.objects.values_list("pk", "group_id", "product_id", "is_default").order_by("pk")),
+            list(Dojo_Group.objects.values_list("pk", "auth_group_id").order_by("pk")),
+        )
+        provision_existing_products()
+        provision_existing_products()
+        marker.group.refresh_from_db()
+        self.policy.group.refresh_from_db()
+        self.assertEqual(marker.group.name, "Dev Team group")
+        self.assertEqual(self.policy.group.name, f"Dev Team group - Product {self.a.pk}")
+        after = (
+            list(Dojo_Group_Member.objects.values_list("pk", "group_id", "user_id", "role_id").order_by("pk")),
+            list(Product_Group.objects.values_list("pk", "group_id", "product_id", "role_id").order_by("pk")),
+            list(RestrictedGroupPolicy.objects.values_list("pk", "group_id", "product_id", "is_default").order_by("pk")),
+            list(Dojo_Group.objects.values_list("pk", "auth_group_id").order_by("pk")),
+        )
+        self.assertEqual(before, after)
+        self.assertTrue(user_has_permission(self.user, self.a, Permissions.Finding_Edit))
+        self.assertFalse(user_has_permission(self.user, self.a, Permissions.Finding_Delete))
+
+    def test_default_group_rename_does_not_take_an_unrelated_name(self):
+        from dojo_permission.provisioning import ensure_default_managed_group, ManagedGroupCollision
+        marker = ensure_default_managed_group()
+        marker.group.name = "Restricted Finding Editors"
+        marker.group.save(update_fields=("name",))
+        unrelated = Dojo_Group.objects.create(name="Dev Team group")
+        with self.assertRaises(ManagedGroupCollision):
+            ensure_default_managed_group()
+        marker.group.refresh_from_db()
+        self.assertEqual(marker.group.name, "Restricted Finding Editors")
+        self.assertFalse(RestrictedGroupPolicy.objects.filter(group=unrelated).exists())
+
+    def test_product_group_rename_does_not_take_an_unrelated_name(self):
+        from dojo_permission.provisioning import ensure_product_policy, ManagedGroupCollision
+        legacy_name = f"Restricted Finding Editors - Product {self.a.pk}"
+        self.policy.group.name = legacy_name
+        self.policy.group.save(update_fields=("name",))
+        unrelated = Dojo_Group.objects.create(name=f"Dev Team group - Product {self.a.pk}")
+        with self.assertRaises(ManagedGroupCollision):
+            ensure_product_policy(self.a)
+        self.policy.group.refresh_from_db()
+        self.assertEqual(self.policy.group.name, legacy_name)
+        self.assertFalse(RestrictedGroupPolicy.objects.filter(group=unrelated).exists())
+
     def test_owned_name_collision_does_not_adopt_unrelated_group(self):
         from dojo_permission.provisioning import ensure_product_policy, managed_product_group_name, ManagedGroupCollision
         self.policy.group.delete()
@@ -116,7 +169,7 @@ class ManagedPolicyTests(TestCase):
         self.assertEqual(actions, ["c"])
 
     def test_default_marker_is_installed_without_access_grants(self):
-        group = Dojo_Group.objects.get(name="Restricted Finding Editors")
+        group = Dojo_Group.objects.get(name="Dev Team group")
         self.assertTrue(RestrictedGroupPolicy.objects.get(group=group).is_active)
         self.assertFalse(Product_Group.objects.filter(group=group).exists())
         self.assertFalse(Product_Type_Group.objects.filter(group=group).exists())
@@ -183,6 +236,8 @@ class ManagedPolicyTests(TestCase):
         response = self.client.get(reverse("dojo_permission:manage_policy_members", args=(self.policy.pk,)))
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, '<button class="btn btn-success" type="submit">')
+        self.assertContains(response, "Add or Invite your Team Member")
+        self.assertNotContains(response, "Create a restricted account")
         for text in ("Add an existing account", "existing-user", self.foreign.username, self.foreign.email):
             self.assertNotContains(response, text)
 
@@ -190,6 +245,7 @@ class ManagedPolicyTests(TestCase):
         response = self.client.get(reverse("product"))
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'id="dojo-permission-create-account"')
+        self.assertContains(response, "Add or Invite your Team Member")
         self.assertContains(response, reverse("dojo_permission:invitation_entry"))
 
     def test_single_invitation_scope_redirects_to_its_form(self):

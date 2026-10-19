@@ -418,14 +418,15 @@ migrations, or builds an inherited Compose `build:` definition.
 
 ## 6. Configure a restricted group
 
-Installation provisions **Restricted Finding Editors** and one managed group
-for each product automatically. No checkbox or provisioning command is needed.
+Installation provisions **Dev Team group** and one managed group named
+**Dev Team group - Product `<id>`** for each product automatically. No checkbox
+or provisioning command is needed.
 An administrator assigns existing accounts through normal group administration:
 the default group restricts existing native access without granting product
 access, while a product group grants restricted access to exactly that product.
 Keep managed product-group assignments unchanged.
 
-Eligible restricted members can create or invite a new email/SSO account for
+Eligible restricted members can add or invite a new email/SSO team member for
 one selected product. Existing-account assignments remain administrator-only.
 Restricted-group Owners and superusers retain native permissions.
 
@@ -469,7 +470,7 @@ Complete these browser checks:
 2. Restricted Reader, Writer, and Maintainer members retain native finding
    editing but cannot edit/copy engagements, create engagements/tests/findings,
    import or re-import scans, copy/delete findings, or delete engagements.
-3. A restricted member can create or invite a new email/SSO account for one
+3. A restricted member can add or invite a new email/SSO team member for one
    selected product; existing accounts can only be assigned by an administrator.
 4. Restricted-group Owners and superusers retain native permissions.
 5. The managed groups retain their intended product scope and restricted

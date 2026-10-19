@@ -3,13 +3,13 @@
 
 {% block content %}
   {{ block.super }}
-  <h3>{% trans "Create a restricted account" %}</h3>
+  <h3>{% trans "Add or Invite your Team Member" %}</h3>
 
   <div class="row">
     <div class="col-md-8">
       <div class="panel panel-default">
         <div class="panel-heading">
-          <strong>{% trans "Create or invite an account" %}</strong>
+          <strong>{% trans "Add or Invite your Team Member" %}</strong>
         </div>
         <div class="panel-body">
           {% if fixed_product %}
@@ -25,7 +25,7 @@
             <input type="hidden" name="action" value="invite_new">
             {% include "dojo/form_fields.html" with form=invitation_form %}
             <button class="btn btn-success" type="submit">
-              {% trans "Create restricted account" %}
+              {% trans "Add or Invite your Team Member" %}
             </button>
           </form>
         </div>

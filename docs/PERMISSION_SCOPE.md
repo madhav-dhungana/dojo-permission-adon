@@ -20,12 +20,13 @@ groups.
 
 ## Group configuration
 
-Installation provisions **Restricted Finding Editors** and a managed restricted
-group for each product. The default group adds restrictions to the member's
-existing native access; it grants no product access. Each product group is
-bound to exactly one product with Writer access. Administrators assign existing
-accounts through DefectDojo's normal group administration. No group checkbox is
-required, and no custom native global role is created.
+Installation provisions **Dev Team group** and a managed restricted group named
+**Dev Team group - Product `<id>`** for each product. The default group adds
+restrictions to the member's existing native access; it grants no product
+access. Each product group is bound to exactly one product with Writer access.
+Administrators assign existing accounts through DefectDojo's normal group
+administration. No group checkbox is required, and no custom native global role
+is created.
 
 ## Finding and engagement access
 
@@ -56,7 +57,7 @@ restricted role.
 
 A member may:
 
-- Create or invite a new DefectDojo account by email.
+- Add or invite a new DefectDojo team member by email.
 - Invite a user who will authenticate through SSO.
 
 The requester selects one product where they can already edit findings, so

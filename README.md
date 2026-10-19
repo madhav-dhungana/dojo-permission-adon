@@ -8,8 +8,8 @@ role tables or redefining the global Writer role. Reader, Writer, and
 Maintainer members retain their native existing-finding access but cannot
 create, edit, copy, or delete engagements; create tests or findings; import or
 re-import scans; copy or delete findings; or manage product access. Restricted
-members can create or invite a new email/SSO account into one selected product
-from **User Menu → Create restricted account**.
+members can add or invite a new email/SSO team member into one selected product
+from **User Menu → Add or Invite your Team Member**.
 Administrators assign existing accounts to the appropriate managed group.
 Restricted-group Owners and superusers keep their native permissions.
 

@@ -25,7 +25,8 @@ from dojo_permission.models import RestrictedGroupPolicy
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MANAGED_GROUP_NAME = "Restricted Finding Editors"
+DEFAULT_MANAGED_GROUP_NAME = "Dev Team group"
+LEGACY_MANAGED_GROUP_NAME = "Restricted Finding Editors"
 DEFAULT_MANAGED_GROUP_DESCRIPTION = (
     "Managed by dojo-permission as a deny-only restriction marker."
 )
@@ -115,6 +116,24 @@ def _activate_managed_policy(policy: RestrictedGroupPolicy) -> RestrictedGroupPo
     return policy
 
 
+def _rename_legacy_managed_group(
+    group: Dojo_Group,
+    *,
+    legacy_name: str,
+    new_name: str,
+) -> None:
+    # Only replace the former generated label on an already-owned group.
+    # Preserve administrator-chosen names, memberships, and authorization IDs.
+    if group.name != legacy_name:
+        return
+    if Dojo_Group.objects.filter(name=new_name).exclude(pk=group.pk).exists():
+        raise ManagedGroupCollision(
+            f"Managed group identity {new_name!r} is occupied by another group.",
+        )
+    group.name = new_name
+    group.save(update_fields=("name",))
+
+
 @transaction.atomic
 def ensure_default_managed_group() -> RestrictedGroupPolicy:
     policy = (
@@ -133,6 +152,11 @@ def ensure_default_managed_group() -> RestrictedGroupPolicy:
             raise ManagedGroupCollision(
                 "The default managed restriction marker must not grant product access.",
             )
+        _rename_legacy_managed_group(
+            group,
+            legacy_name=LEGACY_MANAGED_GROUP_NAME,
+            new_name=DEFAULT_MANAGED_GROUP_NAME,
+        )
         return _activate_managed_policy(policy)
 
     group, group_created = _managed_group(
@@ -195,6 +219,11 @@ def ensure_product_policy(product: Product) -> RestrictedGroupPolicy:
         # administrators may rename this already-owned group without causing a
         # replacement group to be created on the next reconciliation.
         _validate_managed_group(group, display_name=group.name)
+        _rename_legacy_managed_group(
+            group,
+            legacy_name=f"{LEGACY_MANAGED_GROUP_NAME} - Product {product.pk}",
+            new_name=group_name,
+        )
 
     group_policy = (
         RestrictedGroupPolicy.objects.select_for_update(of=("self",))

@@ -82,7 +82,7 @@ class ProductPrivacyTests(TestCase):
         self.assertNotIn(self.peer_b.pk, visible_user_ids(self.actor, self.a))
 
     def test_scoped_group_owner_exemption_wins_over_the_default_marker(self):
-        marker = Dojo_Group.objects.get(name="Restricted Finding Editors")
+        marker = Dojo_Group.objects.get(name="Dev Team group")
         Dojo_Group_Member.objects.create(group=marker, user=self.actor, role=self.role)
         Dojo_Group_Member.objects.filter(group=self.policy.group, user=self.actor).update(role_id=Roles.Owner)
         self.assertTrue(user_has_permission(self.actor, self.a, Permissions.Engagement_Edit))
@@ -146,7 +146,7 @@ class ProductPrivacyTests(TestCase):
 
     def test_shared_marker_serializer_does_not_include_foreign_user_ids(self):
         self.only_product_a()
-        marker = Dojo_Group.objects.get(name="Restricted Finding Editors")
+        marker = Dojo_Group.objects.get(name="Dev Team group")
         for user in (self.actor, self.peer_b):
             Dojo_Group_Member.objects.create(group=marker, user=user, role=self.role)
         request = self.request()
@@ -156,7 +156,7 @@ class ProductPrivacyTests(TestCase):
 
     def test_shared_marker_member_api_does_not_list_or_retrieve_foreign_enrollment(self):
         self.only_product_a()
-        marker = Dojo_Group.objects.get(name="Restricted Finding Editors")
+        marker = Dojo_Group.objects.get(name="Dev Team group")
         Dojo_Group_Member.objects.create(group=marker, user=self.actor, role=self.role)
         foreign = Dojo_Group_Member.objects.create(group=marker, user=self.peer_b, role=self.role)
         response = self.client.get("/api/v2/dojo_group_members/", {"group_id": marker.pk})

@@ -195,7 +195,7 @@ Use your configured web service name instead of `uwsgi` when it differs.
 `[X] 0002_product_bound_policies`. Continue to use the same
 DefectDojo URL and existing administrator credentials.
 
-As an administrator, assign existing accounts to **Restricted Finding Editors**
+As an administrator, assign existing accounts to **Dev Team group**
 to restrict their existing access, or to the appropriate managed product group
 for access to one product. The groups are created automatically; no checkbox
 is required. Reader, Writer, and Maintainer members receive the restriction;
